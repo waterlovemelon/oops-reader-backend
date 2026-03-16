@@ -1,0 +1,33 @@
+server:
+  port: 8080
+  mode: debug
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_timeout: 30s
+
+database:
+  host: localhost
+  port: 3306
+  user: root
+  password: "your_password_here"
+  database: oops_reader
+  max_open_conns: 100
+  max_idle_conns: 10
+  conn_max_lifetime: 1h
+  conn_max_idle_time: 10m
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: "change-this-secret-key-in-production-at-least-32-characters"
+  access_token_expiry: 1h
+  refresh_token_expiry: 168h
+
+log:
+  level: info
+  format: console
+  output_path: stdout
