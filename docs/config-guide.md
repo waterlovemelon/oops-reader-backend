@@ -204,7 +204,7 @@ python3 -c "import yaml; yaml.safe_load(open('config.yaml'))"
 
 ```bash
 # 测试连接
-mysql -u oops_reader -p oops_reader
+mariadb -u oops_reader -p'your_password' oops_reader
 ```
 
 #### 端口被占用

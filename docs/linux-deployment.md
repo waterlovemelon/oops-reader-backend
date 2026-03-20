@@ -25,13 +25,13 @@
 ## 系统要求
 
 ### 最低要求
-- **操作系统**: Ubuntu 20.04+ / CentOS 7+ / Debian 10+
+- **操作系统**: Ubuntu 22.04+ / Debian 12+ / CentOS 8+
 - **CPU**: 1核心
 - **内存**: 512MB
 - **磁盘**: 1GB
 
 ### 推荐配置
-- **操作系统**: Ubuntu 22.04 LTS
+- **操作系统**: Debian 13 / Ubuntu 22.04 LTS
 - **CPU**: 2核心
 - **内存**: 2GB
 - **磁盘**: 10GB
@@ -40,31 +40,37 @@
 
 ## 快速部署
 
-### Ubuntu/Debian
+### Debian 13 / Ubuntu 22.04+
 
 ```bash
 # 1. 安装依赖
 sudo apt update
-sudo apt install -y git golang-1.21 python3 python3-pip mysql-server
+sudo apt install -y git golang-1.21 python3 python3-venv mariadb-server
 
 # 2. 克隆项目（或上传代码）
 cd /opt
 sudo git clone https://github.com/oops-reader/oops-reader-backend.git
 cd oops-reader-backend
 
-# 3. 安装 Python 依赖
-sudo pip3 install requests
+# 3. 创建 Python 虚拟环境并安装依赖
+cd /opt/oops-reader-backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install requests
 
 # 4. 配置数据库
-sudo mysql -e "CREATE DATABASE oops_reader CHARACTER SET utf8mb4;"
-sudo mysql oops_reader < migrations/001_init_user_auth.sql
-sudo mysql oops_reader < migrations/002_init_books.sql
-sudo mysql oops_reader < migrations/003_init_user_reading_data.sql
-sudo mysql oops_reader < migrations/004_init_sync_and_normalization.sql
+sudo mariadb -e "CREATE DATABASE oops_reader CHARACTER SET utf8mb4;"
+sudo mariadb -e "CREATE USER 'oops_reader'@'localhost' IDENTIFIED BY 'strong_password';"
+sudo mariadb -e "GRANT ALL PRIVILEGES ON oops_reader.* TO 'oops_reader'@'localhost';"
+sudo mariadb -e "FLUSH PRIVILEGES;"
+sudo mariadb oops_reader < migrations/001_init_user_auth.sql
+sudo mariadb oops_reader < migrations/002_init_books.sql
+sudo mariadb oops_reader < migrations/003_init_user_reading_data.sql
+sudo mariadb oops_reader < migrations/004_init_sync_and_normalization.sql
 
 # 5. 构建并运行
 go build -o bin/simple ./cmd/simple
-./bin/simple
+./bin/simple > /var/log/oops-reader-backend/app.log 2>&1 &
 ```
 
 ### CentOS/RHEL
@@ -72,23 +78,28 @@ go build -o bin/simple ./cmd/simple
 ```bash
 # 1. 安装依赖
 sudo yum update -y
-sudo yum install -y git golang python3 python3-pip mysql-server
+sudo yum install -y git golang python3 python3-venv mariadb-server
 
 # 2. 克隆项目
 cd /opt
 sudo git clone https://github.com/oops-reader/oops-reader-backend.git
 cd oops-reader-backend
 
-# 3. 安装 Python 依赖
-sudo pip3 install requests
+# 3. 创建 Python 虚拟环境并安装依赖
+python3 -m venv .venv
+source .venv/bin/activate
+pip install requests
 
 # 4. 配置数据库
-sudo systemctl start mysqld
-sudo mysql -e "CREATE DATABASE oops_reader CHARACTER SET utf8mb4;"
-sudo mysql oops_reader < migrations/001_init_user_auth.sql
-sudo mysql oops_reader < migrations/002_init_books.sql
-sudo mysql oops_reader < migrations/003_init_user_reading_data.sql
-sudo mysql oops_reader < migrations/004_init_sync_and_normalization.sql
+sudo systemctl start mariadb
+sudo mariadb -e "CREATE DATABASE oops_reader CHARACTER SET utf8mb4;"
+sudo mariadb -e "CREATE USER 'oops_reader'@'localhost' IDENTIFIED BY 'strong_password';"
+sudo mariadb -e "GRANT ALL PRIVILEGES ON oops_reader.* TO 'oops_reader'@'localhost';"
+sudo mariadb -e "FLUSH PRIVILEGES;"
+sudo mariadb oops_reader < migrations/001_init_user_auth.sql
+sudo mariadb oops_reader < migrations/002_init_books.sql
+sudo mariadb oops_reader < migrations/003_init_user_reading_data.sql
+sudo mariadb oops_reader < migrations/004_init_sync_and_normalization.sql
 
 # 5. 构建并运行
 go build -o bin/simple ./cmd/simple
@@ -103,7 +114,7 @@ go build -o bin/simple ./cmd/simple
 
 #### 1.1 更新系统
 
-**Ubuntu/Debian:**
+**Debian/Ubuntu:**
 ```bash
 sudo apt update
 sudo apt upgrade -y
@@ -129,7 +140,7 @@ sudo chown -R oops-reader:oops-reader /opt/oops-reader-backend
 
 #### 2.1 安装 Git
 
-**Ubuntu/Debian:**
+**Debian/Ubuntu:**
 ```bash
 sudo apt install -y git
 ```
@@ -141,7 +152,7 @@ sudo yum install -y git
 
 #### 2.2 安装 Go 1.21+
 
-**Ubuntu/Debian:**
+**Debian/Ubuntu:**
 ```bash
 wget https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
@@ -167,53 +178,72 @@ source /etc/profile
 go version
 ```
 
-#### 2.3 安装 Python 3
+#### 2.3 安装 Python 3 和虚拟环境
 
-**Ubuntu/Debian:**
+**Debian/Ubuntu:**
 ```bash
-sudo apt install -y python3 python3-pip
+sudo apt install -y python3 python3-venv
 
 # 验证安装
 python3 --version
-pip3 --version
+python3 -m venv --help
 ```
 
 **CentOS/RHEL:**
 ```bash
-sudo yum install -y python3 python3-pip
+sudo yum install -y python3 python3-venv
 
 # 验证安装
 python3 --version
-pip3 --version
+python3 -m venv --help
 ```
 
-#### 2.4 安装 MySQL
+**注意**: Debian 13+ 不支持直接使用 pip3 安装系统包，必须使用虚拟环境。
 
-**Ubuntu/Debian:**
+#### 2.4 安装 MariaDB
+
+**Debian/Ubuntu:**
 ```bash
-sudo apt install -y mysql-server
+sudo apt install -y mariadb-server
 
-# 启动 MySQL
-sudo systemctl start mysql
-sudo systemctl enable mysql
+# 启动 MariaDB
+sudo systemctl start mariadb
+sudo systemctl enable mariadb
 
-# 安全配置
-sudo mysql_secure_installation
+# Debian 13 特殊说明：系统使用 unix_socket 认证，直接 root 用户即可登录
+# 推荐创建应用专用用户（如后面步骤所示）
+# 如需设置 root 密码，登录后执行：ALTER USER 'root'@'localhost IDENTIFIED BY 'password';
 ```
 
 **CentOS/RHEL:**
 ```bash
-sudo yum install -y mysql-server
+sudo yum install -y mariadb-server
 
-# 启动 MySQL
-sudo systemctl start mysqld
-sudo systemctl enable mysqld
+# 启动 MariaDB
+sudo systemctl start mariadb
+sudo systemctl enable mariadb
+```
 
-# 首次启动后获取临时密码
-sudo grep 'temporary password' /var/log/mysqld.log
+#### 2.5 配置 MariaDB Root 密码（仅首次）
 
-# 安全配置
-sudo mysql_secure_installation
+```bash
+# 登录 MariaDB（首次可能没有密码或使用系统 sudo）
+sudo mariadb
+```
+
+```sql
+-- 设置 root 密码（根据 Debian 11+ 的安全策略）
+-- Debian 13 可能使用 unix_socket 认证
+ALTER USER 'root'@'localhost IDENTIFIED BY 'your_root_password';
+FLUSH PRIVILEGES;
+
+-- 或者创建应用的专用数据库和用户，无需修改 root 密码
+CREATE DATABASE oops_reader CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'oops_reader'@'localhost' IDENTIFIED BY 'strong_password_here';
+GRANT ALL PRIVILEGES ON oops_reader.* TO 'oops_reader'@'localhost;
+FLUSH PRIVILEGES;
+
+EXIT;
 ```
 
 ---
@@ -246,26 +276,44 @@ sudo tar xzf oops-reader-backend.tar.gz
 sudo chown -R oops-reader:oops-reader /opt/oops-reader-backend
 ```
 
-#### 3.2 安装 Python 依赖
+#### 3.2 创建 Python 虚拟环境并安装依赖
 
 ```bash
-cd /opt/oops-reader-backend/utils
+cd /opt/oops-reader-backend
 
-# 安装 requests
-pip3 install requests
+# 创建项目级虚拟环境
+python3 -m venv .venv
+
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 安装依赖
+pip install --upgrade pip
+pip install requests
+
+# 创建依赖文件（可选）
+pip freeze > requirements.txt
 
 # 测试 Python 脚本
+cd utils
 python3 book_parser.py "测试"
+
+# 退出虚拟环境
+deactivate
+
+# 返回项目根目录
+cd /opt/oops-reader-backend
 ```
 
 ---
 
 ### 4. 数据库配置
 
-#### 4.1 创建数据库
+#### 4.1 创建数据库和用户
 
 ```bash
-sudo mysql -u root -p
+# 使用 sudo 或 root 登录
+sudo mariadb
 ```
 
 ```sql
@@ -287,14 +335,14 @@ EXIT;
 ```bash
 cd /opt/oops-reader-backend
 
-# 导入迁移文件
-mysql -u oops_reader -p oops_reader < migrations/001_init_user_auth.sql
-mysql -u oops_reader -p oops_reader < migrations/002_init_books.sql
-mysql -u oops_reader -p oops_reader < migrations/003_init_user_reading_data.sql
-mysql -u oops_reader -p oops_reader < migrations/004_init_sync_and_normalization.sql
+# 导入迁移文件（使用专用用户）
+mariadb -u oops_reader -p'strong_password' oops_reader < migrations/001_init_user_auth.sql
+mariadb -u oops_reader -p'strong_password' oops_reader < migrations/002_init_books.sql
+mariadb -u oops_reader -p'strong_password' oops_reader < migrations/003_init_user_reading_data.sql
+mariadb -u oops_reader -p'strong_password' oops_reader < migrations/004_init_sync_and_normalization.sql
 
 # 验证表创建
-mysql -u oops_reader -p oops_reader -e "SHOW TABLES;"
+mariadb -u oops_reader -p'strong_password' oops_reader -e "SHOW TABLES;"
 ```
 
 #### 4.3 验证数据库
@@ -364,22 +412,20 @@ sudo chown -R oops-reader:oops-reader /var/log/oops-reader-backend
 ```ini
 [Unit]
 Description=Oops Reader Backend API Server
-After=network.target mysql.service
+After=network.target mariadb.service
 
 [Service]
 Type=simple
 User=oops-reader
 Group=oops-reader
 WorkingDirectory=/opt/oops-reader-backend
+Environment="PATH=/opt/oops-reader-backend/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="GOPROXY=https://goproxy.cn,direct"
 ExecStart=/opt/oops-reader-backend/bin/simple
 Restart=always
 RestartSec=5
 StandardOutput=append:/var/log/oops-reader-backend/service.log
 StandardError=append:/var/log/oops-reader-backend/error.log
-
-# 环境变量
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-Environment="GOPROXY=https://goproxy.cn,direct"
 
 # 安全设置
 NoNewPrivileges=true
@@ -434,7 +480,7 @@ sudo systemctl status oops-reader
 sudo journalctl -u oops-reader -f
 
 # 查看应用日志
- sudo tail -f /var/log/oops-reader-backend/service.log
+sudo tail -f /var/log/oops-reader-backend/service.log
 
 # 测试健康检查接口
 curl http://localhost:8080/health
@@ -553,19 +599,22 @@ CMD ["/app/bin/simple"]
 version: '3.8'
 
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: oops-reader-mysql
+  mariadb:
+    image: mariadb:10.11
+    container_name: oops-reader-mariadb
     environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: oops_reader
-      MYSQL_USER: oops_reader
-      MYSQL_PASSWORD: oops_reader_password
+      MARIADB_ROOT_PASSWORD: root_password
+      MARIADB_DATABASE: oops_reader
+      MARIADB_USER: oops_reader
+      MARIADB_PASSWORD: oops_reader_password
     ports:
       - "3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mariadb_data:/var/lib/mysql
       - ./migrations:/docker-entrypoint-initdb.d:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     networks:
       - oops-network
 
@@ -578,13 +627,13 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - app_logs:/var/log/oops-reader-backend
     depends_on:
-      - mysql
+      - mariadb
     restart: unless-stopped
     networks:
       - oops-network
 
 volumes:
-  mysql_data:
+  mariadb_data:
   app_logs:
 
 networks:
@@ -837,41 +886,41 @@ echo "Get Book Cover: $(curl -o /dev/null -s -w '%{time_total}\n' 'http://localh
 
 #### 数据库备份
 
-创建 `/usr/local/bin/backup-mysql.sh`:
+创建 `/usr/local/bin/backup-mariadb.sh`:
 
 ```bash
 #!/bin/bash
 
-BACKUP_DIR="/var/backups/mysql"
+BACKUP_DIR="/var/backups/mariadb"
 DATE=$(date +%Y%m%d_%H%M%S)
-MYSQL_USER="oops_reader"
-MYSQL_PASS="your_password"
-MYSQL_DB="oops_reader"
+MARIADB_USER="oops_reader"
+MARIADB_PASS="your_password"
+MARIADB_DB="oops_reader"
 
 mkdir -p $BACKUP_DIR
 
 # 备份数据库
-mysqldump -u$MYSQL_USER -p$MYSQL_PASS $MYSQL_DB | gzip > $BACKUP_DIR/oops_reader_$DATE.sql.gz
+mariadb-dump -u$MARIADB_USER -p$MARIADB_PASS $MARIADB_DB | gzip > $BACKUP_DIR/oops_reader_$DATE.sql.gz
 
 # 删除30天前的备份
 find $BACKUP_DIR -name "oops_reader_*.sql.gz" -mtime +30 -delete
 
 echo "Backup completed: oops_reader_$DATE.sql.gz"
 
-chmod +x /usr/local/bin/backup-mysql.sh
+chmod +x /usr/local/bin/backup-mariadb.sh
 
 # 添加到 crontab（每天凌晨2点）
-0 2 * * * /usr/local/bin/backup-mysql.sh
+0 2 * * * /usr/local/bin/backup-mariadb.sh
 ```
 
 #### 恢复数据库
 
 ```bash
 # 列出备份
-ls -lh /var/backups/mysql/
+ls -lh /var/backups/mariadb/
 
 # 恢复数据
-gunzip < /var/backups/mysql/oops_reader_20251616_020000.sql.gz | mysql -u oops_reader -p oops_reader
+gunzip < /var/backups/mariadb/oops_reader_20251616_020000.sql.gz | mariadb -u oops_reader -p oops_reader
 ```
 
 ---
@@ -923,13 +972,13 @@ sudo chmod 755 /opt/oops-reader-backend/bin/simple
 **问题 3: 数据库连接失败**
 ```bash
 # 测试数据库连接
-mysql -u oops_reader -p oops_reader
+mariadb -u oops_reader -p oops_reader
 
-# 检查 MySQL 状态
-sudo systemctl status mysql
+# 检查 MariaDB 状态
+sudo systemctl status mariadb
 
-# 查看 MySQL 日志
-sudo tail -50 /var/log/mysql/error.log
+# 查看 MariaDB 日志
+sudo tail -50 /var/log/mariadb/mariadb.log
 ```
 
 ### 2. API 响应慢
@@ -960,26 +1009,37 @@ nslookup books.google.com
 #### 测试 Python 环境
 
 ```bash
-cd /opt/oops-reader-backend/utils
+cd /opt/oops-reader-backend
+
+# 激活虚拟环境
+source .venv/bin/activate
 
 # 测试 Python 版本
-python3 --version
+python --version
 
 # 测试依赖
-python3 -c "import requests; print(requests.__version__)"
+python -c "import requests; print(requests.__version__)"
 
 # 手动运行脚本
-python3 book_parser.py "测试"
-python3 bookCover.py "测试"
+python utils/book_parser.py "测试"
+python utils/bookCover.py "测试"
+
+# 退出虚拟环境
+deactivate
 ```
 
 #### 安装缺失的依赖
 
 ```bash
-# 安装 requests
-pip3 install requests
+cd /opt/oops-reader-backend
 
-# 或使用系统包管理器
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 安装 requests
+pip install requests
+
+# 或使用系统包管理器（可选）
 sudo apt install -y python3-requests
 ```
 
@@ -1085,11 +1145,17 @@ sudo certbot renew --dry-run
 ```bash
 cd /opt/oops-reader-backend
 
+# 激活虚拟环境
+source .venv/bin/activate
+
 # 拉取最新代码
 sudo -u oops-reader git pull origin main
 
-# 重新安装 Python 依赖
-pip3 install -r requirements.txt
+# 更新 Python 依赖
+pip install -r requirements.txt
+
+# 退出虚拟环境
+deactivate
 
 # 重新构建
 sudo -u oops-reader go build -o bin/simple ./cmd/simple
@@ -1102,10 +1168,10 @@ sudo systemctl restart oops-reader
 
 ```bash
 # 查看当前迁移版本
-mysql -u oops_reader -p oops_reader -e "SELECT MAX(id) FROM migrations;"
+mariadb -u oops_reader -p'strong_password' oops_reader -e "SELECT MAX(id) FROM migrations;"
 
 # 应用新迁移
-mysql -u oops_reader -p oops_reader < migrations/005_new_feature.sql
+mariadb -u oops_reader -p'strong_password' oops_reader < migrations/005_new_feature.sql
 
 # 验证迁移
 SHOW TABLES;

@@ -1,17 +1,52 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
 type BookParseRequest struct {
 	Input string `json:"input"`
+}
+
+// stripANSICodes 移除 ANSI 控制字符和终端格式字符
+func stripANSICodes(input string) string {
+	// 移除 ANSI 颜色代码: \x1b[...m 或 \033[...m
+	ansiEscapeRegex := regexp.MustCompile(`\x1b\[[0-9;]*m|\033\[[0-9;]*m`)
+	cleaned := ansiEscapeRegex.ReplaceAllString(input, "")
+
+	// 移除其他控制字符 (0-31 和 127)
+	var result bytes.Buffer
+	for _, r := range cleaned {
+		if r >= 32 && r < 127 || r == '\n' {
+			result.WriteRune(r)
+		}
+	}
+
+	return result.String()
+}
+
+// tryParseJSON 尝试解析 JSON 格式
+func tryParseJSON(input string) (map[string]interface{}, bool) {
+	input = strings.TrimSpace(input)
+	var result map[string]interface{}
+	err := json.Unmarshal([]byte(input), &result)
+	if err != nil {
+		return map[string]interface{}{
+			"error":   "Failed to parse JSON",
+			"message": "Output is not in JSON format",
+			"raw":    stripANSICodes(input),
+		}, false
+	}
+	return result, true
 }
 
 func main() {
@@ -70,17 +105,27 @@ func parseBookInfoHandler(w http.ResponseWriter, r *http.Request) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":   "Failed to parse book info",
 			"details": err.Error(),
-			"output":  string(output),
+			"output": stripANSICodes(string(output)),
 		})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(output)
+	// 清理输出并返回 JSON
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	jsonResult, isJSON := tryParseJSON(stripANSICodes(string(output)))
+	if isJSON {
+		json.NewEncoder(w).Encode(jsonResult)
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Failed to parse JSON output",
+			"details": "Python script output is not in JSON format",
+			"cleaned_output": stripANSICodes(string(output)),
+		})
+	}
 }
 
 func getBookCoverHandler(w http.ResponseWriter, r *http.Request) {
@@ -110,17 +155,27 @@ func getBookCoverHandler(w http.ResponseWriter, r *http.Request) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":   "Failed to get book cover",
 			"details": err.Error(),
-			"output":  string(output),
+			"output": stripANSICodes(string(output)),
 		})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(output)
+	// 清理输出并返回 JSON
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	jsonResult, isJSON := tryParseJSON(stripANSICodes(string(output)))
+	if isJSON {
+		json.NewEncoder(w).Encode(jsonResult)
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Failed to parse JSON output",
+			"details": "Python script output is not in JSON format",
+			"cleaned_output": stripANSICodes(string(output)),
+		})
+	}
 }
 
 func getWorkingDir() (string, error) {

@@ -5,7 +5,7 @@
 ## 已实现功能
 
 ### 数据库
-- 完整的 MySQL 数据库设计，包含 19 个表：
+- 完整的 MariaDB 数据库设计，包含 19 个表：
   - 用户认证：users, user_auth_providers, user_sessions
   - 书籍主数据：books, authors, book_authors, book_aliases, book_external_sources
   - 用户阅读数据：user_bookshelves, reading_progress, reading_sessions, reading_daily_stats, user_notes, user_preferences
@@ -166,14 +166,14 @@ brew install go
 
 ```bash
 # 创建数据库
-mysql -u root -p
+mariadb -u root -p
 CREATE DATABASE oops_reader CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 # 运行迁移
-mysql -u root -p oops_reader < migrations/001_init_user_auth.sql
-mysql -u root -p oops_reader < migrations/002_init_books.sql
-mysql -u root -p oops_reader < migrations/003_init_user_reading_data.sql
-mysql -u root -p oops_reader < migrations/004_init_sync_and_normalization.sql
+mariadb -u root -p oops_reader < migrations/001_init_user_auth.sql
+mariadb -u root -p oops_reader < migrations/002_init_books.sql
+mariadb -u root -p oops_reader < migrations/003_init_user_reading_data.sql
+mariadb -u root -p oops_reader < migrations/004_init_sync_and_normalization.sql
 ```
 
 ### 3. 配置环境
@@ -244,7 +244,7 @@ curl "http://localhost:8080/v1/utils/book-cover?book_name=三体"
 ## 技术栈
 
 - **HTTP 服务**: Gin
-- **数据库**: MySQL + go-sql-driver
+- **数据库**: MariaDB + go-sql-driver
 - **日志**: Zap
 - **配置**: Viper
 - **认证**: JWT (golang-jwt/jwt)
