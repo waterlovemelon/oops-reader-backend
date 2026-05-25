@@ -1,11 +1,9 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os/exec"
 	"path/filepath"
@@ -27,14 +25,14 @@ func (h *HealthHandler) Check(c *gin.Context) {
 
 	if err := h.db.PingContext(ctx); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status": "error",
+			"status":  "error",
 			"message": "database connection failed",
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status": "ok",
+		"status":  "ok",
 		"message": "service is healthy",
 	})
 }
@@ -179,7 +177,7 @@ func ParseBookInfo(c *gin.Context) {
 	var req BookParseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request body",
+			"error":   "Invalid request body",
 			"details": err.Error(),
 		})
 		return
@@ -202,9 +200,9 @@ func ParseBookInfo(c *gin.Context) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to parse book info",
+			"error":   "Failed to parse book info",
 			"details": err.Error(),
-			"output": string(output),
+			"output":  string(output),
 		})
 		return
 	}
@@ -213,7 +211,7 @@ func ParseBookInfo(c *gin.Context) {
 	if err := json.Unmarshal(output, &result); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"raw_output": string(output),
-			"note": "Could not parse JSON output",
+			"note":       "Could not parse JSON output",
 		})
 		return
 	}
@@ -247,9 +245,9 @@ func GetBookCover(c *gin.Context) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get book cover",
+			"error":   "Failed to get book cover",
 			"details": err.Error(),
-			"output": string(output),
+			"output":  string(output),
 		})
 		return
 	}

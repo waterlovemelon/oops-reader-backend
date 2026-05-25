@@ -1,10 +1,12 @@
 package middleware
 
 import (
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oops-reader/oops-reader-backend/internal/identity"
 	"go.uber.org/zap"
 )
 
@@ -63,11 +65,7 @@ func CORS() gin.HandlerFunc {
 	}
 }
 
-type JWTConfig struct {
-	Secret string
-}
-
-func Auth(cfg *JWTConfig) gin.HandlerFunc {
+func Auth(identityService *identity.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -88,15 +86,8 @@ func Auth(cfg *JWTConfig) gin.HandlerFunc {
 		}
 
 		tokenString := parts[1]
-
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(cfg.Secret), nil
-		})
-
-		if err != nil || !token.Valid {
+		claims, err := identityService.ValidateToken(tokenString, identity.TokenTypeAccess)
+		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "Invalid token",
 			})
@@ -104,10 +95,19 @@ func Auth(cfg *JWTConfig) gin.HandlerFunc {
 			return
 		}
 
-		if claims, ok := token.Claims.(jwt.MapClaims); ok {
-			c.Set("user_id", claims["sub"])
-		}
-
+		c.Set("user_id", claims.UserID)
 		c.Next()
 	}
+}
+
+func CurrentUserID(c *gin.Context) (string, bool) {
+	userID, ok := c.Get("user_id")
+	if !ok {
+		return "", false
+	}
+	value, ok := userID.(string)
+	if !ok || value == "" {
+		return "", false
+	}
+	return value, true
 }

@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oops-reader/oops-reader-backend/internal/catalog"
+	"github.com/oops-reader/oops-reader-backend/internal/community"
+	"github.com/oops-reader/oops-reader-backend/internal/identity"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/config"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/db"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/log"
@@ -78,37 +81,63 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	healthHandler := handlers.NewHealthHandler(db)
 	router.GET("/health", healthHandler.Check)
 
+	identityService := identity.NewService(cfg.JWT.Secret)
+	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
+	communityService := community.NewService()
+
+	identityHandler := handlers.NewIdentityHandler(identityService)
+	catalogHandler := handlers.NewCatalogHandler(catalogService)
+	communityHandler := handlers.NewCommunityHandler(communityService)
+	authRequired := middleware.Auth(identityService)
+
 	api := router.Group("/v1")
 	{
 		auth := api.Group("/auth")
 		{
-			auth.POST("/register", handlers.Register)
+			auth.POST("/guest", identityHandler.CreateGuest)
+			auth.POST("/bind", authRequired, identityHandler.Bind)
 			auth.POST("/login", handlers.Login)
-			auth.POST("/refresh", handlers.RefreshToken)
+			auth.POST("/register", handlers.Register)
+			auth.POST("/refresh", identityHandler.Refresh)
 		}
 
 		users := api.Group("/users")
-		users.Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
+		users.Use(authRequired)
 		{
-			users.GET("/me", handlers.GetCurrentUser)
+			users.GET("/me", identityHandler.GetCurrentUser)
 			users.PATCH("/me", handlers.UpdateCurrentUser)
 		}
 
+		catalogRoutes := api.Group("/catalog")
+		{
+			catalogRoutes.GET("/books", catalogHandler.ListBooks)
+			catalogRoutes.GET("/books/:id", catalogHandler.GetBook)
+			catalogRoutes.GET("/books/:id/cover", catalogHandler.Cover)
+			catalogRoutes.GET("/books/:id/download", catalogHandler.Download)
+			catalogRoutes.HEAD("/books/:id/download", catalogHandler.Download)
+			catalogRoutes.GET("/books/:id/manifest", catalogHandler.Manifest)
+			catalogRoutes.GET("/books/:id/chapters/:chapter_id", catalogHandler.Chapter)
+		}
+
+		communityRoutes := api.Group("/community")
+		{
+			communityRoutes.GET("/boards", communityHandler.ListBoards)
+			communityRoutes.GET("/threads", communityHandler.ListThreads)
+			communityRoutes.POST("/threads", authRequired, communityHandler.CreateThread)
+			communityRoutes.GET("/threads/:id", communityHandler.GetThread)
+			communityRoutes.POST("/threads/:id/comments", authRequired, communityHandler.AddComment)
+			communityRoutes.POST("/reactions", authRequired, communityHandler.React)
+		}
+
 		books := api.Group("/books")
-		books.Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
+		books.Use(authRequired)
 		{
 			books.GET("/search", handlers.SearchBooks)
 			books.GET("/:id", handlers.GetBookByID)
 		}
 
 		bookshelf := api.Group("/bookshelf")
-		bookshelf.Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
+		bookshelf.Use(authRequired)
 		{
 			bookshelf.GET("", handlers.ListBookshelf)
 			bookshelf.POST("", handlers.AddToBookshelf)
@@ -117,9 +146,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		}
 
 		reading := api.Group("/reading")
-		reading.Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
+		reading.Use(authRequired)
 		{
 			reading.PUT("/progress", handlers.UpdateReadingProgress)
 			reading.POST("/sessions", handlers.CreateReadingSession)
@@ -127,9 +154,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		}
 
 		notes := api.Group("/notes")
-		notes.Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
+		notes.Use(authRequired)
 		{
 			notes.GET("", handlers.ListNotes)
 			notes.POST("", handlers.CreateNote)
@@ -137,17 +162,11 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 			notes.DELETE("/:id", handlers.DeleteNote)
 		}
 
-		api.GET("/preferences", handlers.GetPreferences).Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
-		api.PUT("/preferences", handlers.UpdatePreferences).Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
+		api.GET("/preferences", authRequired, handlers.GetPreferences)
+		api.PUT("/preferences", authRequired, handlers.UpdatePreferences)
 
 		sync := api.Group("/sync")
-		sync.Use(middleware.Auth(&middleware.JWTConfig{
-			Secret: cfg.JWT.Secret,
-		}))
+		sync.Use(authRequired)
 		{
 			sync.POST("/push", handlers.SyncPush)
 			sync.POST("/pull", handlers.SyncPull)
@@ -159,8 +178,6 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		utils.POST("/parse-book-info", handlers.ParseBookInfo)
 		utils.GET("/book-cover", handlers.GetBookCover)
 	}
-
-	return router
 
 	return router
 }

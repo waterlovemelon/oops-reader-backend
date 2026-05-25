@@ -11,6 +11,7 @@ import (
 	"github.com/oops-reader/oops-reader-backend/internal/platform/config"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/db"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/log"
+	"go.uber.org/zap"
 )
 
 func main() {
