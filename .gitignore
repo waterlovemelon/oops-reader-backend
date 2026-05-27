@@ -164,3 +164,7 @@ generated/
 # Compiled binaries
 /bin/
 !/bin/.gitkeep
+
+# Local git worktrees
+.worktrees
+.worktrees/
