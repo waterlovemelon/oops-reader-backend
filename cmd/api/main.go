@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oops-reader/oops-reader-backend/internal/catalog"
 	"github.com/oops-reader/oops-reader-backend/internal/community"
+	"github.com/oops-reader/oops-reader-backend/internal/entitlement"
 	"github.com/oops-reader/oops-reader-backend/internal/identity"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/config"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/db"
@@ -90,10 +91,12 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	identityService := identity.NewService(identityStore, cfg.JWT.Secret)
 	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
 	communityService := community.NewService()
+	entitlementService := entitlement.NewService(nil)
 
 	identityHandler := handlers.NewIdentityHandler(identityService)
 	catalogHandler := handlers.NewCatalogHandler(catalogService)
 	communityHandler := handlers.NewCommunityHandler(communityService)
+	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
 	authRequired := middleware.Auth(identityService)
 
 	api := router.Group("/v1")
@@ -113,6 +116,12 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		{
 			users.GET("/me", identityHandler.GetCurrentUser)
 			users.PATCH("/me", identityHandler.UpdateCurrentUser)
+		}
+
+		account := api.Group("/account")
+		account.Use(authRequired)
+		{
+			account.GET("/entitlements", entitlementHandler.List)
 		}
 
 		catalogRoutes := api.Group("/catalog")
