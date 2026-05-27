@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oops-reader/oops-reader-backend/internal/backup"
 	"github.com/oops-reader/oops-reader-backend/internal/catalog"
 	"github.com/oops-reader/oops-reader-backend/internal/community"
 	"github.com/oops-reader/oops-reader-backend/internal/entitlement"
@@ -92,11 +93,13 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
 	communityService := community.NewService()
 	entitlementService := entitlement.NewService(nil)
+	backupService := backup.NewService(backup.NewMySQLStore(db))
 
 	identityHandler := handlers.NewIdentityHandler(identityService)
 	catalogHandler := handlers.NewCatalogHandler(catalogService)
 	communityHandler := handlers.NewCommunityHandler(communityService)
 	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
+	backupHandler := handlers.NewBackupHandler(backupService)
 	authRequired := middleware.Auth(identityService)
 
 	api := router.Group("/v1")
@@ -122,6 +125,14 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		account.Use(authRequired)
 		{
 			account.GET("/entitlements", entitlementHandler.List)
+		}
+
+		backupRoutes := api.Group("/backup")
+		backupRoutes.Use(authRequired)
+		{
+			backupRoutes.GET("/reading-data/summary", backupHandler.Summary)
+			backupRoutes.POST("/reading-data", backupHandler.Upload)
+			backupRoutes.GET("/reading-data", backupHandler.Download)
 		}
 
 		catalogRoutes := api.Group("/catalog")
