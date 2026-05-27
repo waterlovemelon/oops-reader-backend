@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/oops-reader/oops-reader-backend/internal/community"
@@ -69,7 +70,7 @@ func (h *CommunityHandler) CreateThread(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
 		return
 	}
-	thread, err := h.service.CreateThread(userID, req.BoardID, req.Title, req.Content, req.OptionalBookID)
+	thread, err := h.service.CreateThread(strconv.FormatUint(userID, 10), req.BoardID, req.Title, req.Content, req.OptionalBookID)
 	if err != nil {
 		writeCommunityError(c, err)
 		return
@@ -97,7 +98,7 @@ func (h *CommunityHandler) AddComment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
 		return
 	}
-	comment, err := h.service.AddComment(userID, c.Param("id"), req.ParentCommentID, req.Content)
+	comment, err := h.service.AddComment(strconv.FormatUint(userID, 10), c.Param("id"), req.ParentCommentID, req.Content)
 	if err != nil {
 		writeCommunityError(c, err)
 		return
@@ -116,7 +117,7 @@ func (h *CommunityHandler) React(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
 		return
 	}
-	reaction, err := h.service.React(userID, req.TargetType, req.TargetID, req.ReactionType)
+	reaction, err := h.service.React(strconv.FormatUint(userID, 10), req.TargetType, req.TargetID, req.ReactionType)
 	if err != nil {
 		writeCommunityError(c, err)
 		return

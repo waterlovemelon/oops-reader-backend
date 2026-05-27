@@ -86,7 +86,7 @@ func Auth(identityService *identity.Service) gin.HandlerFunc {
 		}
 
 		tokenString := parts[1]
-		claims, err := identityService.ValidateToken(tokenString, identity.TokenTypeAccess)
+		claims, err := identityService.ValidateAccessToken(c.Request.Context(), tokenString)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "Invalid token",
@@ -100,14 +100,14 @@ func Auth(identityService *identity.Service) gin.HandlerFunc {
 	}
 }
 
-func CurrentUserID(c *gin.Context) (string, bool) {
+func CurrentUserID(c *gin.Context) (uint64, bool) {
 	userID, ok := c.Get("user_id")
 	if !ok {
-		return "", false
+		return 0, false
 	}
-	value, ok := userID.(string)
-	if !ok || value == "" {
-		return "", false
+	value, ok := userID.(uint64)
+	if !ok || value == 0 {
+		return 0, false
 	}
 	return value, true
 }

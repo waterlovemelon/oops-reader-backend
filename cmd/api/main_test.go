@@ -23,28 +23,28 @@ func TestSetupRouterExposesMVPAPI(t *testing.T) {
 		JWT: config.JWTConfig{Secret: "test-secret"},
 	}, zap.NewNop(), nil)
 
-	guestRecorder := httptest.NewRecorder()
-	guestRequest := httptest.NewRequest(
+	registerRecorder := httptest.NewRecorder()
+	registerRequest := httptest.NewRequest(
 		http.MethodPost,
-		"/v1/auth/guest",
-		strings.NewReader(`{"device_id":"test-device"}`),
+		"/v1/auth/register",
+		strings.NewReader(`{"email":"reader@example.com","password":"password12345","nickname":"Reader","device_id":"test-device","platform":"linux"}`),
 	)
-	guestRequest.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(guestRecorder, guestRequest)
-	if guestRecorder.Code != http.StatusCreated {
-		t.Fatalf("guest status = %d, body = %s", guestRecorder.Code, guestRecorder.Body.String())
+	registerRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(registerRecorder, registerRequest)
+	if registerRecorder.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, body = %s", registerRecorder.Code, registerRecorder.Body.String())
 	}
 
-	var guestBody struct {
+	var registerBody struct {
 		Data struct {
 			AccessToken string `json:"access_token"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(guestRecorder.Body.Bytes(), &guestBody); err != nil {
-		t.Fatalf("decode guest response: %v", err)
+	if err := json.Unmarshal(registerRecorder.Body.Bytes(), &registerBody); err != nil {
+		t.Fatalf("decode register response: %v", err)
 	}
-	if guestBody.Data.AccessToken == "" {
-		t.Fatal("guest access token is empty")
+	if registerBody.Data.AccessToken == "" {
+		t.Fatal("register access token is empty")
 	}
 
 	for _, tc := range []struct {
@@ -66,7 +66,7 @@ func TestSetupRouterExposesMVPAPI(t *testing.T) {
 
 	meRecorder := httptest.NewRecorder()
 	meRequest := httptest.NewRequest(http.MethodGet, "/v1/users/me", nil)
-	meRequest.Header.Set("Authorization", "Bearer "+guestBody.Data.AccessToken)
+	meRequest.Header.Set("Authorization", "Bearer "+registerBody.Data.AccessToken)
 	router.ServeHTTP(meRecorder, meRequest)
 	if meRecorder.Code != http.StatusOK {
 		t.Fatalf("me status = %d, body = %s", meRecorder.Code, meRecorder.Body.String())
@@ -106,6 +106,54 @@ func TestSetupRouterExposesMVPAPI(t *testing.T) {
 	}
 	if got := coverRecorder.Body.String(); got != "fake-jpeg-cover" {
 		t.Fatalf("cover body = %q, want fake-jpeg-cover", got)
+	}
+}
+
+func TestDuplicateRegisterReturnsConflict(t *testing.T) {
+	router := setupRouter(&config.Config{
+		JWT: config.JWTConfig{Secret: "test-secret"},
+	}, zap.NewNop(), nil)
+
+	body := `{"email":"reader@example.com","password":"password12345","nickname":"Reader","device_id":"test-device","platform":"linux"}`
+	for i, want := range []int{http.StatusCreated, http.StatusConflict} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Fatalf("register attempt %d status = %d, body = %s, want %d", i+1, recorder.Code, recorder.Body.String(), want)
+		}
+	}
+}
+
+func TestProtectedRouteRequiresBearerToken(t *testing.T) {
+	router := setupRouter(&config.Config{
+		JWT: config.JWTConfig{Secret: "test-secret"},
+	}, zap.NewNop(), nil)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/users/me", nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("me without token status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPasswordResetRequestIsGeneric(t *testing.T) {
+	router := setupRouter(&config.Config{
+		JWT: config.JWTConfig{Secret: "test-secret"},
+	}, zap.NewNop(), nil)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/auth/password/reset-request",
+		strings.NewReader(`{"email":"missing@example.com"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reset request status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

@@ -81,7 +81,13 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	healthHandler := handlers.NewHealthHandler(db)
 	router.GET("/health", healthHandler.Check)
 
-	identityService := identity.NewService(cfg.JWT.Secret)
+	var identityStore identity.Store
+	if db == nil {
+		identityStore = identity.NewMemoryStore()
+	} else {
+		identityStore = identity.NewMySQLStore(db)
+	}
+	identityService := identity.NewService(identityStore, cfg.JWT.Secret)
 	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
 	communityService := community.NewService()
 
@@ -94,18 +100,19 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	{
 		auth := api.Group("/auth")
 		{
-			auth.POST("/guest", identityHandler.CreateGuest)
-			auth.POST("/bind", authRequired, identityHandler.Bind)
-			auth.POST("/login", handlers.Login)
-			auth.POST("/register", handlers.Register)
+			auth.POST("/register", identityHandler.Register)
+			auth.POST("/login", identityHandler.Login)
 			auth.POST("/refresh", identityHandler.Refresh)
+			auth.POST("/logout", authRequired, identityHandler.Logout)
+			auth.POST("/password/reset-request", identityHandler.RequestPasswordReset)
+			auth.POST("/password/reset-confirm", identityHandler.ConfirmPasswordReset)
 		}
 
 		users := api.Group("/users")
 		users.Use(authRequired)
 		{
 			users.GET("/me", identityHandler.GetCurrentUser)
-			users.PATCH("/me", handlers.UpdateCurrentUser)
+			users.PATCH("/me", identityHandler.UpdateCurrentUser)
 		}
 
 		catalogRoutes := api.Group("/catalog")
