@@ -58,6 +58,25 @@ func (h *CommunityHandler) ListThreads(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": data, "pagination": gin.H{"page": page, "page_size": pageSize}})
 }
 
+func (h *CommunityHandler) ListMyThreads(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization required"})
+		return
+	}
+	page, pageSize := pagination(c)
+	threads, err := h.service.ListUserThreads(userID, page, pageSize)
+	if err != nil {
+		writeCommunityError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(threads))
+	for _, thread := range threads {
+		data = append(data, threadJSON(thread))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "pagination": gin.H{"page": page, "page_size": pageSize}})
+}
+
 func (h *CommunityHandler) CreateThread(c *gin.Context) {
 	userID, ok := middleware.CurrentUserID(c)
 	if !ok {

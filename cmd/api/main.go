@@ -83,7 +83,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 
 	identityService := identity.NewService(cfg.JWT.Secret)
 	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
-	communityService := community.NewService()
+	communityService := community.NewServiceWithDB(db)
 
 	identityHandler := handlers.NewIdentityHandler(identityService)
 	catalogHandler := handlers.NewCatalogHandler(catalogService)
@@ -123,6 +123,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		{
 			communityRoutes.GET("/boards", communityHandler.ListBoards)
 			communityRoutes.GET("/threads", communityHandler.ListThreads)
+			communityRoutes.GET("/threads/mine", authRequired, communityHandler.ListMyThreads)
 			communityRoutes.POST("/threads", authRequired, communityHandler.CreateThread)
 			communityRoutes.GET("/threads/:id", communityHandler.GetThread)
 			communityRoutes.POST("/threads/:id/comments", authRequired, communityHandler.AddComment)

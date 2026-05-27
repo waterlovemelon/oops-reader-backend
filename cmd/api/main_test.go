@@ -72,6 +72,38 @@ func TestSetupRouterExposesMVPAPI(t *testing.T) {
 		t.Fatalf("me status = %d, body = %s", meRecorder.Code, meRecorder.Body.String())
 	}
 
+	createThreadRecorder := httptest.NewRecorder()
+	createThreadRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/community/threads",
+		strings.NewReader(`{"board_id":"general","title":"闲聊测试","content":"第一版闲聊发帖测试"}`),
+	)
+	createThreadRequest.Header.Set("Content-Type", "application/json")
+	createThreadRequest.Header.Set("Authorization", "Bearer "+guestBody.Data.AccessToken)
+	router.ServeHTTP(createThreadRecorder, createThreadRequest)
+	if createThreadRecorder.Code != http.StatusCreated {
+		t.Fatalf("create community thread status = %d, body = %s", createThreadRecorder.Code, createThreadRecorder.Body.String())
+	}
+
+	myThreadsRecorder := httptest.NewRecorder()
+	myThreadsRequest := httptest.NewRequest(http.MethodGet, "/v1/community/threads/mine", nil)
+	myThreadsRequest.Header.Set("Authorization", "Bearer "+guestBody.Data.AccessToken)
+	router.ServeHTTP(myThreadsRecorder, myThreadsRequest)
+	if myThreadsRecorder.Code != http.StatusOK {
+		t.Fatalf("my community threads status = %d, body = %s", myThreadsRecorder.Code, myThreadsRecorder.Body.String())
+	}
+	var myThreadsBody struct {
+		Data []struct {
+			Title string `json:"title"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(myThreadsRecorder.Body.Bytes(), &myThreadsBody); err != nil {
+		t.Fatalf("decode my community threads response: %v", err)
+	}
+	if len(myThreadsBody.Data) != 1 || myThreadsBody.Data[0].Title != "闲聊测试" {
+		t.Fatalf("my community threads = %+v, want created thread", myThreadsBody.Data)
+	}
+
 	catalogRecorder := httptest.NewRecorder()
 	catalogRequest := httptest.NewRequest(http.MethodGet, "/v1/catalog/books?page=1&page_size=1", nil)
 	router.ServeHTTP(catalogRecorder, catalogRequest)

@@ -2,6 +2,7 @@ package community
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -76,6 +77,7 @@ type Reaction struct {
 
 type Service struct {
 	mu        sync.RWMutex
+	store     Store
 	boards    map[string]Board
 	threads   map[string]Thread
 	comments  map[string]Comment
@@ -84,7 +86,19 @@ type Service struct {
 }
 
 func NewService() *Service {
+	return NewServiceWithStore(nil)
+}
+
+func NewServiceWithDB(db *sql.DB) *Service {
+	if db == nil {
+		return NewService()
+	}
+	return NewServiceWithStore(NewMySQLStore(db))
+}
+
+func NewServiceWithStore(store Store) *Service {
 	s := &Service{
+		store:     store,
 		boards:    make(map[string]Board),
 		threads:   make(map[string]Thread),
 		comments:  make(map[string]Comment),
@@ -96,6 +110,12 @@ func NewService() *Service {
 }
 
 func (s *Service) ListBoards() []Board {
+	if s.store != nil {
+		boards, err := s.store.ListBoards()
+		if err == nil {
+			return boards
+		}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -115,6 +135,9 @@ func (s *Service) ListThreads(boardID string, page, pageSize int) ([]Thread, err
 		return nil, fmt.Errorf("%w: board ID is required", ErrInvalidInput)
 	}
 	page, pageSize = normalizePage(page, pageSize)
+	if s.store != nil {
+		return s.store.ListThreads(boardID, page, pageSize)
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -144,6 +167,29 @@ func (s *Service) ListThreads(boardID string, page, pageSize int) ([]Thread, err
 	return threads[start:end], nil
 }
 
+func (s *Service) ListUserThreads(userID string, page, pageSize int) ([]Thread, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, fmt.Errorf("%w: user ID is required", ErrInvalidInput)
+	}
+	page, pageSize = normalizePage(page, pageSize)
+	if s.store != nil {
+		return s.store.ListUserThreads(userID, page, pageSize)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	threads := make([]Thread, 0)
+	for _, thread := range s.threads {
+		if thread.UserID == userID && thread.Status == StatusActive {
+			threads = append(threads, s.hydrateThreadLocked(thread))
+		}
+	}
+	sortThreadsNewestFirst(threads)
+	return paginateThreads(threads, page, pageSize), nil
+}
+
 func (s *Service) CreateThread(userID, boardID, title, content, optionalBookID string) (Thread, error) {
 	userID = strings.TrimSpace(userID)
 	boardID = strings.TrimSpace(boardID)
@@ -152,6 +198,9 @@ func (s *Service) CreateThread(userID, boardID, title, content, optionalBookID s
 	optionalBookID = strings.TrimSpace(optionalBookID)
 	if userID == "" || boardID == "" || title == "" || content == "" {
 		return Thread{}, fmt.Errorf("%w: user ID, board ID, title, and content are required", ErrInvalidInput)
+	}
+	if s.store != nil {
+		return s.store.CreateThread(userID, boardID, title, content, optionalBookID)
 	}
 
 	s.mu.Lock()
@@ -183,6 +232,9 @@ func (s *Service) GetThread(id string) (Thread, error) {
 	if id == "" {
 		return Thread{}, fmt.Errorf("%w: thread ID is required", ErrInvalidInput)
 	}
+	if s.store != nil {
+		return s.store.GetThread(id)
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -202,6 +254,9 @@ func (s *Service) AddComment(userID, threadID, parentCommentID, content string) 
 	if userID == "" || threadID == "" || content == "" {
 		return Comment{}, fmt.Errorf("%w: user ID, thread ID, and content are required", ErrInvalidInput)
 	}
+	if s.store != nil {
+		return s.store.AddComment(userID, threadID, parentCommentID, content)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,6 +269,9 @@ func (s *Service) AddComment(userID, threadID, parentCommentID, content string) 
 		parent, ok := s.comments[parentCommentID]
 		if !ok || parent.ThreadID != threadID || parent.Status != StatusActive {
 			return Comment{}, ErrCommentNotFound
+		}
+		if parent.ParentCommentID != "" {
+			return Comment{}, fmt.Errorf("%w: second-level replies are not supported", ErrInvalidInput)
 		}
 	}
 
@@ -244,6 +302,9 @@ func (s *Service) React(userID, targetType, targetID, reactionType string) (Reac
 	reactionType = strings.TrimSpace(reactionType)
 	if userID == "" || targetID == "" || !validTargetType(targetType) || !validReactionType(reactionType) {
 		return Reaction{}, fmt.Errorf("%w: valid user, target, and reaction are required", ErrInvalidInput)
+	}
+	if s.store != nil {
+		return s.store.React(userID, targetType, targetID, reactionType)
 	}
 
 	s.mu.Lock()
@@ -357,6 +418,24 @@ func normalizePage(page, pageSize int) (int, int) {
 		pageSize = 50
 	}
 	return page, pageSize
+}
+
+func sortThreadsNewestFirst(threads []Thread) {
+	sort.Slice(threads, func(i, j int) bool {
+		return threads[i].UpdatedAt.After(threads[j].UpdatedAt)
+	})
+}
+
+func paginateThreads(threads []Thread, page, pageSize int) []Thread {
+	start := (page - 1) * pageSize
+	if start >= len(threads) {
+		return []Thread{}
+	}
+	end := start + pageSize
+	if end > len(threads) {
+		end = len(threads)
+	}
+	return threads[start:end]
 }
 
 func newID(prefix string) string {
