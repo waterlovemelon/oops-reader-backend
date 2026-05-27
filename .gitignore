@@ -23,7 +23,6 @@ vendor/
 /dist/
 
 # Go mod cache
-go.sum
 
 # Environment variables
 .env

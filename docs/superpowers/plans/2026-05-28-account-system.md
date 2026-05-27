@@ -10,6 +10,12 @@
 
 ---
 
+## Execution Environment
+
+Backend Go commands are executed on the remote server `root@8.136.58.109`, not on the local machine. Local backend changes are synced to `/root/oops-reader-account-system-backend` before running `go test`, builds, migrations, or service deployment. The local machine is used for editing and Git only.
+
+App validation is executed locally with the Linux target through `scripts/run_linux_local.sh`.
+
 ## Scope Check
 
 This plan implements one coherent product capability: accounts with first-version cloud backup. It touches backend and app code, but the work is ordered so each phase is testable:
