@@ -175,7 +175,7 @@ mariadb -u root -p oops_reader < migrations/002_init_books.sql
 mariadb -u root -p oops_reader < migrations/003_init_user_reading_data.sql
 mariadb -u root -p oops_reader < migrations/004_init_sync_and_normalization.sql
 mariadb -u root -p oops_reader < migrations/005_init_catalog_books.sql
-mariadb -u root -p oops_reader < migrations/006_init_account_system.sql
+mariadb -u root -p oops_reader < migrations/007_init_account_system.sql
 ```
 
 ### 3. 配置环境

@@ -32,7 +32,7 @@ Full multi-device merge sync, VIP purchase, phone login, third-party login, and 
 
 ### Backend Repository: `oops-reader-backend`
 
-- Create `migrations/006_init_account_system.sql`
+- Create `migrations/007_init_account_system.sql`
   - Adds account fields, reset tokens, entitlements, and backup table.
 - Modify `internal/identity/service.go`
   - Replaces in-memory identity with persistent account service APIs.
@@ -95,12 +95,12 @@ Full multi-device merge sync, VIP purchase, phone login, third-party login, and 
 ## Task 1: Backend Account Migration
 
 **Files:**
-- Create: `migrations/006_init_account_system.sql`
+- Create: `migrations/007_init_account_system.sql`
 - Modify: `README.md`
 
 - [ ] **Step 1: Create the migration**
 
-Create `migrations/006_init_account_system.sql` with this SQL:
+Create `migrations/007_init_account_system.sql` with this SQL:
 
 ```sql
 -- Account system tables and fields
@@ -183,13 +183,13 @@ Expected: tests may fail because migration is not executed by Go tests yet, but 
 Modify `README.md` deployment migration list to include:
 
 ```bash
-mariadb -u root -p oops_reader < migrations/006_init_account_system.sql
+mariadb -u root -p oops_reader < migrations/007_init_account_system.sql
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add migrations/006_init_account_system.sql README.md
+git add migrations/007_init_account_system.sql README.md
 git commit -m "feat: add account system migration"
 ```
 
