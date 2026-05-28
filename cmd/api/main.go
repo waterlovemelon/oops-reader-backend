@@ -21,6 +21,7 @@ import (
 	"github.com/oops-reader/oops-reader-backend/internal/platform/log"
 	"github.com/oops-reader/oops-reader-backend/internal/transport/http/handlers"
 	"github.com/oops-reader/oops-reader-backend/internal/transport/http/middleware"
+	"github.com/oops-reader/oops-reader-backend/internal/tts"
 	"go.uber.org/zap"
 )
 
@@ -100,6 +101,14 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	communityHandler := handlers.NewCommunityHandler(communityService)
 	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
 	backupHandler := handlers.NewBackupHandler(backupService)
+	ttsService := tts.NewService(tts.Config{
+		DefaultProvider: cfg.TTS.DefaultProvider,
+		Edge: tts.EdgeConfig{
+			BaseURL: cfg.TTS.Edge.BaseURL,
+			Token:   cfg.TTS.Edge.Token,
+		},
+	}, db)
+	ttsHandler := handlers.NewTTSHandler(ttsService)
 	authRequired := middleware.Auth(identityService)
 
 	api := router.Group("/v1")
@@ -197,6 +206,16 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		{
 			sync.POST("/push", handlers.SyncPush)
 			sync.POST("/pull", handlers.SyncPull)
+		}
+
+		ttsRoutes := api.Group("/tts")
+		{
+			ttsRoutes.GET("/providers", ttsHandler.ListProviders)
+			ttsRoutes.GET("/synthesize", authRequired, ttsHandler.Synthesize)
+			ttsRoutes.GET("/synthesize/:provider", authRequired, ttsHandler.Synthesize)
+			ttsRoutes.GET("/voices", authRequired, ttsHandler.ListVoices)
+			ttsRoutes.GET("/voices/:provider", authRequired, ttsHandler.ListVoices)
+			ttsRoutes.POST("/provider/select", authRequired, ttsHandler.SelectProvider)
 		}
 	}
 

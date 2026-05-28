@@ -31,3 +31,9 @@ log:
   level: info
   format: console
   output_path: stdout
+
+tts:
+  default_provider: edge
+  edge:
+    base_url: "http://8.136.58.109:80"
+    token: ""

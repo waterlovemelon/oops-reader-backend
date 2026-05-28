@@ -13,6 +13,7 @@ type Config struct {
 	Redis    RedisConfig    `mapstructure:"redis"`
 	JWT      JWTConfig      `mapstructure:"jwt"`
 	Log      LogConfig      `mapstructure:"log"`
+	TTS      TTSConfig      `mapstructure:"tts"`
 }
 
 type ServerConfig struct {
@@ -52,6 +53,16 @@ type LogConfig struct {
 	Level      string `mapstructure:"level"`
 	Format     string `mapstructure:"format"`
 	OutputPath string `mapstructure:"output_path"`
+}
+
+type TTSConfig struct {
+	DefaultProvider string          `mapstructure:"default_provider"`
+	Edge            TTSEdgeConfig   `mapstructure:"edge"`
+}
+
+type TTSEdgeConfig struct {
+	BaseURL string `mapstructure:"base_url"`
+	Token   string `mapstructure:"token"`
 }
 
 func Load() (*Config, error) {
@@ -104,6 +115,10 @@ func setDefaults() {
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("log.format", "json")
 	viper.SetDefault("log.output_path", "stdout")
+
+	viper.SetDefault("tts.default_provider", "edge")
+	viper.SetDefault("tts.edge.base_url", "http://8.136.58.109:80")
+	viper.SetDefault("tts.edge.token", "")
 }
 
 func (c *Config) GetDSN() string {

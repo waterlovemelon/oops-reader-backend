@@ -167,3 +167,5 @@ generated/
 # Local git worktrees
 .worktrees
 .worktrees/
+
+private-info
