@@ -22,6 +22,10 @@
 Oops Reader Backend 是为 Oops Reader 提供的后端服务，主要提供以下功能：
 - 书籍信息解析与检索
 - 书籍封面获取
+- 账户注册、登录、会话刷新与密码重置
+- 账户权益查询（首版仅返回普通账户能力，保留 VIP 扩展）
+- 阅读数据云端备份与恢复
+- 社区公开浏览与账户登录后的发帖、评论、点赞
 - 健康检查
 
 ### 技术栈
@@ -76,6 +80,16 @@ Oops Reader Backend 是为 Oops Reader 提供的后端服务，主要提供以�
 | 接口名称 | 方法 | 路径 | 描述 |
 |---------|------|------|------|
 | 健康检查 | GET | `/health` | 检查服务健康状态 |
+| 账户注册 | POST | `/v1/auth/register` | 创建账户并返回登录会话 |
+| 账户登录 | POST | `/v1/auth/login` | 使用邮箱密码登录 |
+| 刷新会话 | POST | `/v1/auth/refresh` | 使用 refresh token 换取新会话 |
+| 退出登录 | POST | `/v1/auth/logout` | 注销 refresh token |
+| 密码重置请求 | POST | `/v1/auth/password/reset-request` | 请求密码重置邮件 |
+| 当前账户 | GET | `/v1/users/me` | 获取当前账户资料 |
+| 账户权益 | GET | `/v1/account/entitlements` | 获取账户类型和权益列表 |
+| 阅读备份摘要 | GET | `/v1/backup/reading-data/summary` | 获取当前账户云端备份摘要 |
+| 上传阅读备份 | POST | `/v1/backup/reading-data` | 上传本机阅读数据快照 |
+| 下载阅读备份 | GET | `/v1/backup/reading-data` | 下载当前账户最新阅读数据快照 |
 | 书籍解析 | POST | `/v1/utils/parse-book-info` | 解析书籍名称和作者并检索信息 |
 | 书籍封面 | GET | `/v1/utils/book-cover` | 获取书籍封面图片 |
 
@@ -116,7 +130,115 @@ curl http://localhost:8080/health
 
 ---
 
-### 2. 书籍解析
+### 2. 账户与会话
+
+账户接口使用邮箱密码登录。登录后客户端保存 `access_token` 和 `refresh_token`；需要账户身份的接口使用：
+
+```http
+Authorization: Bearer <access_token>
+```
+
+#### 注册
+```http
+POST /v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "reader@example.com",
+  "password": "password123",
+  "nickname": "Reader"
+}
+```
+
+#### 登录
+```http
+POST /v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "reader@example.com",
+  "password": "password123"
+}
+```
+
+#### 登录响应
+```json
+{
+  "data": {
+    "user": {
+      "id": 1,
+      "email": "reader@example.com",
+      "nickname": "Reader",
+      "avatar_url": "",
+      "account_status": "active",
+      "account_type": "normal"
+    },
+    "access_token": "...",
+    "refresh_token": "...",
+    "token_type": "Bearer"
+  }
+}
+```
+
+#### 权益查询
+```http
+GET /v1/account/entitlements
+Authorization: Bearer <access_token>
+```
+
+首版不开放 VIP 购买，但响应保留 `account_type` 和 `entitlements`，后续可直接扩展 VIP 权益。
+
+---
+
+### 3. 阅读数据备份
+
+阅读备份按账户维度保存。首次上传建议使用 `mode=create_if_empty`；如果云端已有数据，服务会返回 `409 cloud_data_exists`，客户端可提示用户改用覆盖备份。
+
+#### 获取摘要
+```http
+GET /v1/backup/reading-data/summary
+Authorization: Bearer <access_token>
+```
+
+#### 上传备份
+```http
+POST /v1/backup/reading-data
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "mode": "create_if_empty",
+  "device_id": "linux",
+  "device_name": "Linux",
+  "schema_version": 1,
+  "payload": {
+    "bookshelf": [],
+    "reading_progress": [],
+    "notes": [],
+    "preferences": {}
+  },
+  "book_count": 0,
+  "note_count": 0,
+  "progress_count": 0,
+  "preference_count": 0
+}
+```
+
+#### 下载备份
+```http
+GET /v1/backup/reading-data
+Authorization: Bearer <access_token>
+```
+
+---
+
+### 4. 社区鉴权约定
+
+社区公开读接口保持匿名访问，例如帖子列表和帖子详情。发帖、评论、点赞、我的帖子等账户相关接口统一使用账户 `access_token`，不再使用独立的社区访客 token。
+
+---
+
+### 5. 书籍解析
 
 解析输入字符串中的书籍名称和作者信息，并联网检索详细的书籍元数据。
 
