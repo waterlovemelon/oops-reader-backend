@@ -8,12 +8,13 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	Log      LogConfig      `mapstructure:"log"`
-	TTS      TTSConfig      `mapstructure:"tts"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	JWT       JWTConfig       `mapstructure:"jwt"`
+	Log       LogConfig       `mapstructure:"log"`
+	TTS       TTSConfig       `mapstructure:"tts"`
+	Community CommunityConfig `mapstructure:"community"`
 }
 
 type ServerConfig struct {
@@ -79,6 +80,15 @@ type TTSMiMoConfig struct {
 	Model   string `mapstructure:"model"`
 }
 
+type CommunityConfig struct {
+	Images CommunityImagesConfig `mapstructure:"images"`
+}
+
+type CommunityImagesConfig struct {
+	LocalPath string `mapstructure:"local_path"`
+	PublicURL string `mapstructure:"public_url"`
+}
+
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -136,6 +146,9 @@ func setDefaults() {
 	viper.SetDefault("tts.rate_limit.enabled", true)
 	viper.SetDefault("tts.rate_limit.rate", 30)  // 30 requests per minute
 	viper.SetDefault("tts.rate_limit.burst", 5)   // burst of 5
+
+	viper.SetDefault("community.images.local_path", "./data/community/images")
+	viper.SetDefault("community.images.public_url", "/community/images")
 }
 
 func (c *Config) GetDSN() string {

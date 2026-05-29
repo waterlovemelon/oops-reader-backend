@@ -1,12 +1,12 @@
 package community
 
 import (
+	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -26,6 +26,11 @@ var (
 	ErrBoardNotFound   = errors.New("board not found")
 	ErrThreadNotFound  = errors.New("thread not found")
 	ErrCommentNotFound = errors.New("comment not found")
+
+	ErrAttachmentNotFound      = errors.New("attachment not found")
+	ErrAttachmentNotOwned      = errors.New("attachment not owned by user")
+	ErrAttachmentAlreadyBound  = errors.New("attachment already bound")
+	ErrAttachmentLimitExceeded = errors.New("attachment limit exceeded")
 )
 
 type Board struct {
@@ -33,22 +38,27 @@ type Board struct {
 	Name        string
 	Description string
 	Status      string
+	SortOrder   int
 	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type Thread struct {
-	ID             string
-	BoardID        string
-	UserID         string
-	Title          string
-	Content        string
-	OptionalBookID string
-	Status         string
-	CommentCount   int
-	ReactionCounts map[string]int
-	Comments       []Comment
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID              string
+	BoardID         string
+	UserID          string
+	Title           string
+	Content         string
+	OptionalBookID  string
+	Status          string
+	CommentCount    int
+	ReactionCount   int // total reactions, from DB column
+	ReactionCounts  map[string]int
+	Comments        []Comment
+	Attachments     []Attachment
+	LastCommentedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type Comment struct {
@@ -58,7 +68,9 @@ type Comment struct {
 	ParentCommentID string
 	Content         string
 	Status          string
+	ReactionCount   int // total reactions, from DB column
 	ReactionCounts  map[string]int
+	Attachments     []Attachment
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -75,76 +87,90 @@ type Reaction struct {
 }
 
 type Service struct {
-	mu        sync.RWMutex
-	boards    map[string]Board
-	threads   map[string]Thread
-	comments  map[string]Comment
-	reactions map[string]Reaction
-	now       func() time.Time
+	store Store
+	now   func() time.Time
 }
 
-func NewService() *Service {
+// NewService creates a community Service with the given Store.
+func NewService(store Store) *Service {
 	s := &Service{
-		boards:    make(map[string]Board),
-		threads:   make(map[string]Thread),
-		comments:  make(map[string]Comment),
-		reactions: make(map[string]Reaction),
-		now:       time.Now,
+		store: store,
+		now:   time.Now,
 	}
 	s.seedBoards()
 	return s
 }
 
-func (s *Service) ListBoards() []Board {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	boards := make([]Board, 0, len(s.boards))
-	for _, board := range s.boards {
-		boards = append(boards, board)
+// NewServiceWithDB creates a community Service backed by MySQL or MemoryStore.
+func NewServiceWithDB(db *sql.DB) *Service {
+	var store Store
+	if db == nil {
+		store = NewMemoryStore()
+	} else {
+		store = NewMySQLStore(db)
 	}
-	sort.Slice(boards, func(i, j int) bool {
-		return boards[i].CreatedAt.Before(boards[j].CreatedAt)
-	})
-	return boards
+	return NewService(store)
 }
 
-func (s *Service) ListThreads(boardID string, page, pageSize int) ([]Thread, error) {
+func (s *Service) seedBoards() {
+	ctx := context.Background()
+	boards := []Board{
+		{ID: "general", Name: "General", Description: "Open discussion for readers.", SortOrder: 1},
+		{ID: "book-club", Name: "Book Club", Description: "Shared reads, prompts, and group notes.", SortOrder: 2},
+		{ID: "help", Name: "Help", Description: "Questions about books, imports, and the app.", SortOrder: 3},
+	}
+	for i := range boards {
+		boards[i].Status = StatusActive
+	}
+	_ = s.store.EnsureDefaultBoards(ctx, boards)
+}
+
+func (s *Service) ListBoards(ctx context.Context) ([]Board, error) {
+	return s.store.ListBoards(ctx)
+}
+
+func (s *Service) ListThreads(ctx context.Context, boardID string, page, pageSize int) ([]Thread, error) {
 	boardID = strings.TrimSpace(boardID)
 	if boardID == "" {
 		return nil, fmt.Errorf("%w: board ID is required", ErrInvalidInput)
 	}
 	page, pageSize = normalizePage(page, pageSize)
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if _, ok := s.boards[boardID]; !ok {
+	// Verify board exists
+	boards, err := s.store.ListBoards(ctx)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, b := range boards {
+		if b.ID == boardID {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return nil, ErrBoardNotFound
 	}
 
-	threads := make([]Thread, 0)
-	for _, thread := range s.threads {
-		if thread.BoardID == boardID && thread.Status == StatusActive {
-			threads = append(threads, s.hydrateThreadLocked(thread))
-		}
+	offset := (page - 1) * pageSize
+	threads, err := s.store.ListThreads(ctx, boardID, pageSize, offset)
+	if err != nil {
+		return nil, err
 	}
-	sort.Slice(threads, func(i, j int) bool {
-		return threads[i].UpdatedAt.After(threads[j].UpdatedAt)
-	})
 
-	start := (page - 1) * pageSize
-	if start >= len(threads) {
-		return []Thread{}, nil
+	// Hydrate threads with comments, reactions, and attachments
+	hydrated := make([]Thread, 0, len(threads))
+	for _, thread := range threads {
+		t, err := s.hydrateThread(ctx, thread)
+		if err != nil {
+			return nil, err
+		}
+		hydrated = append(hydrated, t)
 	}
-	end := start + pageSize
-	if end > len(threads) {
-		end = len(threads)
-	}
-	return threads[start:end], nil
+	return hydrated, nil
 }
 
-func (s *Service) CreateThread(userID, boardID, title, content, optionalBookID string) (Thread, error) {
+func (s *Service) CreateThread(ctx context.Context, userID, boardID, title, content, optionalBookID string, attachmentIDs []string) (Thread, error) {
 	userID = strings.TrimSpace(userID)
 	boardID = strings.TrimSpace(boardID)
 	title = strings.TrimSpace(title)
@@ -154,10 +180,24 @@ func (s *Service) CreateThread(userID, boardID, title, content, optionalBookID s
 		return Thread{}, fmt.Errorf("%w: user ID, board ID, title, and content are required", ErrInvalidInput)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Validate attachment count
+	if len(attachmentIDs) > MaxThreadAttachments {
+		return Thread{}, fmt.Errorf("%w: thread can have at most %d attachments", ErrAttachmentLimitExceeded, MaxThreadAttachments)
+	}
 
-	if _, ok := s.boards[boardID]; !ok {
+	// Verify board exists
+	boards, err := s.store.ListBoards(ctx)
+	if err != nil {
+		return Thread{}, err
+	}
+	found := false
+	for _, b := range boards {
+		if b.ID == boardID {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return Thread{}, ErrBoardNotFound
 	}
 
@@ -174,27 +214,30 @@ func (s *Service) CreateThread(userID, boardID, title, content, optionalBookID s
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	s.threads[thread.ID] = thread
-	return thread, nil
+
+	created, err := s.store.CreateThread(ctx, thread, attachmentIDs)
+	if err != nil {
+		return Thread{}, err
+	}
+
+	// Return hydrated thread
+	return s.hydrateThread(ctx, created)
 }
 
-func (s *Service) GetThread(id string) (Thread, error) {
+func (s *Service) GetThread(ctx context.Context, id string) (Thread, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return Thread{}, fmt.Errorf("%w: thread ID is required", ErrInvalidInput)
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	thread, ok := s.threads[id]
-	if !ok || thread.Status != StatusActive {
-		return Thread{}, ErrThreadNotFound
+	thread, err := s.store.GetThread(ctx, id)
+	if err != nil {
+		return Thread{}, err
 	}
-	return s.hydrateThreadLocked(thread), nil
+	return s.hydrateThread(ctx, thread)
 }
 
-func (s *Service) AddComment(userID, threadID, parentCommentID, content string) (Comment, error) {
+func (s *Service) AddComment(ctx context.Context, userID, threadID, parentCommentID, content string, attachmentIDs []string) (Comment, error) {
 	userID = strings.TrimSpace(userID)
 	threadID = strings.TrimSpace(threadID)
 	parentCommentID = strings.TrimSpace(parentCommentID)
@@ -203,16 +246,34 @@ func (s *Service) AddComment(userID, threadID, parentCommentID, content string) 
 		return Comment{}, fmt.Errorf("%w: user ID, thread ID, and content are required", ErrInvalidInput)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Validate attachment count
+	if len(attachmentIDs) > MaxCommentAttachments {
+		return Comment{}, fmt.Errorf("%w: comment can have at most %d attachments", ErrAttachmentLimitExceeded, MaxCommentAttachments)
+	}
 
-	thread, ok := s.threads[threadID]
-	if !ok || thread.Status != StatusActive {
+	// Verify thread exists and is active
+	thread, err := s.store.GetThread(ctx, threadID)
+	if err != nil {
 		return Comment{}, ErrThreadNotFound
 	}
+	if thread.Status != StatusActive {
+		return Comment{}, ErrThreadNotFound
+	}
+
+	// If replying, verify parent comment exists and belongs to same thread
 	if parentCommentID != "" {
-		parent, ok := s.comments[parentCommentID]
-		if !ok || parent.ThreadID != threadID || parent.Status != StatusActive {
+		comments, err := s.store.ListComments(ctx, threadID)
+		if err != nil {
+			return Comment{}, err
+		}
+		found := false
+		for _, c := range comments {
+			if c.ID == parentCommentID && c.Status == StatusActive {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return Comment{}, ErrCommentNotFound
 		}
 	}
@@ -229,15 +290,22 @@ func (s *Service) AddComment(userID, threadID, parentCommentID, content string) 
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
-	s.comments[comment.ID] = comment
-	thread.CommentCount++
-	thread.UpdatedAt = now
-	s.threads[threadID] = thread
 
-	return comment, nil
+	created, err := s.store.CreateComment(ctx, comment, attachmentIDs)
+	if err != nil {
+		return Comment{}, err
+	}
+
+	// Hydrate comment with attachments
+	created, err = s.hydrateComment(ctx, created)
+	if err != nil {
+		return Comment{}, err
+	}
+
+	return created, nil
 }
 
-func (s *Service) React(userID, targetType, targetID, reactionType string) (Reaction, error) {
+func (s *Service) React(ctx context.Context, userID, targetType, targetID, reactionType string) (Reaction, error) {
 	userID = strings.TrimSpace(userID)
 	targetType = strings.TrimSpace(targetType)
 	targetID = strings.TrimSpace(targetID)
@@ -246,86 +314,153 @@ func (s *Service) React(userID, targetType, targetID, reactionType string) (Reac
 		return Reaction{}, fmt.Errorf("%w: valid user, target, and reaction are required", ErrInvalidInput)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.validateTargetLocked(targetType, targetID); err != nil {
+	// Validate target exists
+	if err := s.validateTarget(ctx, targetType, targetID); err != nil {
 		return Reaction{}, err
 	}
 
 	now := s.now().UTC()
-	key := reactionKey(userID, targetType, targetID)
-	reaction, ok := s.reactions[key]
-	if ok {
-		reaction.ReactionType = reactionType
-		reaction.Status = StatusActive
-		reaction.UpdatedAt = now
-	} else {
-		reaction = Reaction{
-			ID:           newID("rxn"),
-			UserID:       userID,
-			TargetType:   targetType,
-			TargetID:     targetID,
-			ReactionType: reactionType,
-			Status:       StatusActive,
-			CreatedAt:    now,
-			UpdatedAt:    now,
-		}
+	reaction := Reaction{
+		ID:           newID("rxn"),
+		UserID:       userID,
+		TargetType:   targetType,
+		TargetID:     targetID,
+		ReactionType: reactionType,
+		Status:       StatusActive,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
-	s.reactions[key] = reaction
 
-	return reaction, nil
+	return s.store.UpsertReaction(ctx, reaction)
 }
 
-func (s *Service) seedBoards() {
+// ── Attachments ──────────────────────────────────────────────────────────────
+
+// CreateAttachmentInput contains the data for creating an attachment record.
+type CreateAttachmentInput struct {
+	OwnerUserID     string
+	FileType        string
+	StorageProvider string
+	StorageKey      string
+	PublicURL       string
+	MIMEType        string
+	FileSize        uint
+	Width           uint
+	Height          uint
+	ChecksumSHA256  string
+}
+
+// CreateAttachment creates a pending attachment record in the store.
+func (s *Service) CreateAttachment(ctx context.Context, input CreateAttachmentInput) (Attachment, error) {
 	now := s.now().UTC()
-	for i, board := range []Board{
-		{ID: "general", Name: "General", Description: "Open discussion for readers."},
-		{ID: "book-club", Name: "Book Club", Description: "Shared reads, prompts, and group notes."},
-		{ID: "help", Name: "Help", Description: "Questions about books, imports, and the app."},
-	} {
-		board.Status = StatusActive
-		board.CreatedAt = now.Add(time.Duration(i) * time.Millisecond)
-		s.boards[board.ID] = board
+	att := Attachment{
+		ID:              newID("att"),
+		OwnerUserID:     input.OwnerUserID,
+		FileType:        input.FileType,
+		StorageProvider: input.StorageProvider,
+		StorageKey:      input.StorageKey,
+		PublicURL:       input.PublicURL,
+		MIMEType:        input.MIMEType,
+		FileSize:        input.FileSize,
+		Width:           input.Width,
+		Height:          input.Height,
+		ChecksumSHA256:  input.ChecksumSHA256,
+		Status:          StatusPending,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
+	return s.store.CreateAttachment(ctx, att)
 }
 
-func (s *Service) hydrateThreadLocked(thread Thread) Thread {
-	thread.Comments = []Comment{}
-	thread.ReactionCounts = s.reactionCountsLocked(TargetTypeThread, thread.ID)
-	for _, comment := range s.comments {
-		if comment.ThreadID == thread.ID && comment.Status == StatusActive {
-			comment.ReactionCounts = s.reactionCountsLocked(TargetTypeComment, comment.ID)
-			thread.Comments = append(thread.Comments, comment)
+// ── hydration helpers ────────────────────────────────────────────────────────
+
+func (s *Service) hydrateThread(ctx context.Context, thread Thread) (Thread, error) {
+	// Get comments
+	comments, err := s.store.ListComments(ctx, thread.ID)
+	if err != nil {
+		return Thread{}, err
+	}
+
+	// Get reaction counts for thread and all comments
+	targets := []ReactionTarget{
+		{TargetType: TargetTypeThread, TargetID: thread.ID},
+	}
+	for _, c := range comments {
+		targets = append(targets, ReactionTarget{TargetType: TargetTypeComment, TargetID: c.ID})
+	}
+
+	reactionCounts, err := s.store.CountReactions(ctx, targets)
+	if err != nil {
+		return Thread{}, err
+	}
+
+	thread.ReactionCounts = reactionCounts[ReactionTarget{TargetType: TargetTypeThread, TargetID: thread.ID}]
+	if thread.ReactionCounts == nil {
+		thread.ReactionCounts = map[string]int{}
+	}
+
+	// Hydrate comments with reaction counts and attachments
+	attTargets := []AttachmentTarget{{TargetType: TargetTypeThread, TargetID: thread.ID}}
+	for _, c := range comments {
+		attTargets = append(attTargets, AttachmentTarget{TargetType: TargetTypeComment, TargetID: c.ID})
+	}
+	attMap, err := s.store.ListAttachments(ctx, attTargets)
+	if err != nil {
+		return Thread{}, err
+	}
+
+	thread.Attachments = attMap[AttachmentTarget{TargetType: TargetTypeThread, TargetID: thread.ID}]
+
+	hydratedComments := make([]Comment, 0, len(comments))
+	for _, c := range comments {
+		c.ReactionCounts = reactionCounts[ReactionTarget{TargetType: TargetTypeComment, TargetID: c.ID}]
+		if c.ReactionCounts == nil {
+			c.ReactionCounts = map[string]int{}
 		}
+		c.Attachments = attMap[AttachmentTarget{TargetType: TargetTypeComment, TargetID: c.ID}]
+		hydratedComments = append(hydratedComments, c)
 	}
-	sort.Slice(thread.Comments, func(i, j int) bool {
-		return thread.Comments[i].CreatedAt.Before(thread.Comments[j].CreatedAt)
-	})
-	thread.CommentCount = len(thread.Comments)
-	return thread
+	thread.Comments = hydratedComments
+	thread.CommentCount = len(hydratedComments)
+
+	return thread, nil
 }
 
-func (s *Service) reactionCountsLocked(targetType, targetID string) map[string]int {
-	counts := map[string]int{}
-	for _, reaction := range s.reactions {
-		if reaction.TargetType == targetType && reaction.TargetID == targetID && reaction.Status == StatusActive {
-			counts[reaction.ReactionType]++
-		}
+func (s *Service) hydrateComment(ctx context.Context, comment Comment) (Comment, error) {
+	targets := []ReactionTarget{
+		{TargetType: TargetTypeComment, TargetID: comment.ID},
 	}
-	return counts
+	reactionCounts, err := s.store.CountReactions(ctx, targets)
+	if err != nil {
+		return Comment{}, err
+	}
+	comment.ReactionCounts = reactionCounts[ReactionTarget{TargetType: TargetTypeComment, TargetID: comment.ID}]
+	if comment.ReactionCounts == nil {
+		comment.ReactionCounts = map[string]int{}
+	}
+
+	attTargets := []AttachmentTarget{
+		{TargetType: TargetTypeComment, TargetID: comment.ID},
+	}
+	attMap, err := s.store.ListAttachments(ctx, attTargets)
+	if err != nil {
+		return Comment{}, err
+	}
+	comment.Attachments = attMap[AttachmentTarget{TargetType: TargetTypeComment, TargetID: comment.ID}]
+
+	return comment, nil
 }
 
-func (s *Service) validateTargetLocked(targetType, targetID string) error {
+func (s *Service) validateTarget(ctx context.Context, targetType, targetID string) error {
 	switch targetType {
 	case TargetTypeThread:
-		thread, ok := s.threads[targetID]
-		if !ok || thread.Status != StatusActive {
+		thread, err := s.store.GetThread(ctx, targetID)
+		if err != nil || thread.Status != StatusActive {
 			return ErrThreadNotFound
 		}
 	case TargetTypeComment:
-		comment, ok := s.comments[targetID]
-		if !ok || comment.Status != StatusActive {
+		comment, err := s.store.GetComment(ctx, targetID)
+		if err != nil || comment.Status != StatusActive {
 			return ErrCommentNotFound
 		}
 	default:
@@ -333,6 +468,8 @@ func (s *Service) validateTargetLocked(targetType, targetID string) error {
 	}
 	return nil
 }
+
+// ── utilities ────────────────────────────────────────────────────────────────
 
 func validTargetType(targetType string) bool {
 	return targetType == TargetTypeThread || targetType == TargetTypeComment

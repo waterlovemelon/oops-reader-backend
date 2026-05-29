@@ -92,13 +92,17 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	}
 	identityService := identity.NewService(identityStore, cfg.JWT.Secret)
 	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
-	communityService := community.NewService()
+	communityService := community.NewServiceWithDB(db)
+	communityStorage := community.NewLocalStorage(community.LocalStorageConfig{
+		BasePath:  cfg.Community.Images.LocalPath,
+		PublicURL: cfg.Community.Images.PublicURL,
+	})
 	entitlementService := entitlement.NewService(nil)
 	backupService := backup.NewService(backup.NewMySQLStore(db))
 
 	identityHandler := handlers.NewIdentityHandler(identityService)
 	catalogHandler := handlers.NewCatalogHandler(catalogService)
-	communityHandler := handlers.NewCommunityHandler(communityService)
+	communityHandler := handlers.NewCommunityHandler(communityService, communityStorage)
 	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
 	backupHandler := handlers.NewBackupHandler(backupService)
 	ttsService := tts.NewService(tts.Config{
@@ -168,6 +172,11 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 			communityRoutes.GET("/threads/:id", communityHandler.GetThread)
 			communityRoutes.POST("/threads/:id/comments", authRequired, communityHandler.AddComment)
 			communityRoutes.POST("/reactions", authRequired, communityHandler.React)
+			communityRoutes.POST("/attachments", authRequired, communityHandler.UploadAttachment)
+		}
+		// Serve locally stored community images.
+		if cfg.Community.Images.LocalPath != "" {
+			router.Static("/community/images", cfg.Community.Images.LocalPath)
 		}
 
 		books := api.Group("/books")
