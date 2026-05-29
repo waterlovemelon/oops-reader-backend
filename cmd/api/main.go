@@ -216,11 +216,22 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		ttsRoutes := api.Group("/tts")
 		{
 			ttsRoutes.GET("/providers", ttsHandler.ListProviders)
-			ttsRoutes.GET("/synthesize", authRequired, ttsHandler.Synthesize)
-			ttsRoutes.GET("/synthesize/:provider", authRequired, ttsHandler.Synthesize)
 			ttsRoutes.GET("/voices", authRequired, ttsHandler.ListVoices)
 			ttsRoutes.GET("/voices/:provider", authRequired, ttsHandler.ListVoices)
 			ttsRoutes.POST("/provider/select", authRequired, ttsHandler.SelectProvider)
+		}
+		// Synthesize routes with optional rate limiting.
+		synthRoutes := ttsRoutes.Group("")
+		synthRoutes.Use(authRequired)
+		if cfg.TTS.RateLimit.Enabled {
+			synthRoutes.Use(middleware.RateLimit(middleware.RateLimiterConfig{
+				Rate:  cfg.TTS.RateLimit.Rate,
+				Burst: cfg.TTS.RateLimit.Burst,
+			}))
+		}
+		{
+			synthRoutes.GET("/synthesize", ttsHandler.Synthesize)
+			synthRoutes.GET("/synthesize/:provider", ttsHandler.Synthesize)
 		}
 	}
 

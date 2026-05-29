@@ -59,6 +59,13 @@ type TTSConfig struct {
 	DefaultProvider string          `mapstructure:"default_provider"`
 	Edge            TTSEdgeConfig   `mapstructure:"edge"`
 	MiMo            TTSMiMoConfig   `mapstructure:"mimo"`
+	RateLimit       TTSRateLimit    `mapstructure:"rate_limit"`
+}
+
+type TTSRateLimit struct {
+	Enabled bool    `mapstructure:"enabled"`
+	Rate    float64 `mapstructure:"rate"` // requests per minute per user
+	Burst   int     `mapstructure:"burst"`
 }
 
 type TTSEdgeConfig struct {
@@ -126,6 +133,9 @@ func setDefaults() {
 	viper.SetDefault("tts.default_provider", "edge")
 	viper.SetDefault("tts.edge.base_url", "http://8.136.58.109:80")
 	viper.SetDefault("tts.edge.token", "")
+	viper.SetDefault("tts.rate_limit.enabled", true)
+	viper.SetDefault("tts.rate_limit.rate", 30)  // 30 requests per minute
+	viper.SetDefault("tts.rate_limit.burst", 5)   // burst of 5
 }
 
 func (c *Config) GetDSN() string {
