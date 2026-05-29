@@ -33,7 +33,11 @@ log:
   output_path: stdout
 
 tts:
-  default_provider: edge
+  default_provider: mimo
   edge:
     base_url: "http://8.136.58.109:80"
     token: ""
+  mimo:
+    api_key: "tp-c7hxf3c8kjqoffix0bcjq3rxxo0nmn3wdy4s5s1xmx050a0c"
+    base_url: "https://token-plan-cn.xiaomimimo.com/v1"
+    model: "mimo-v2.5-tts"

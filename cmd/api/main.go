@@ -107,6 +107,11 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 			BaseURL: cfg.TTS.Edge.BaseURL,
 			Token:   cfg.TTS.Edge.Token,
 		},
+		MiMo: tts.MiMoConfig{
+			APIKey:  cfg.TTS.MiMo.APIKey,
+			BaseURL: cfg.TTS.MiMo.BaseURL,
+			Model:   cfg.TTS.MiMo.Model,
+		},
 	}, db)
 	ttsHandler := handlers.NewTTSHandler(ttsService)
 	authRequired := middleware.Auth(identityService)

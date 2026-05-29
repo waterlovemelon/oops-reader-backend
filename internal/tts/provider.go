@@ -6,9 +6,10 @@ import "context"
 type SynthesizeRequest struct {
 	Text   string `json:"text"`
 	Voice  string `json:"voice"`
-	Rate   int    `json:"rate"`   // percent offset from 1.0, e.g. 0, +20, -10
-	Pitch  int    `json:"pitch"`  // percent offset from 1.0
-	Volume int    `json:"volume"` // percent offset from 1.0
+	Format string `json:"format,omitempty"` // "mp3", "wav", "ogg" — provider-specific
+	Rate   int    `json:"rate"`             // percent offset from 1.0, e.g. 0, +20, -10
+	Pitch  int    `json:"pitch"`            // percent offset from 1.0
+	Volume int    `json:"volume"`           // percent offset from 1.0
 }
 
 // SynthesizeResponse is the audio result from a TTS provider.

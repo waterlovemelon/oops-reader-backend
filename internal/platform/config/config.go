@@ -58,11 +58,18 @@ type LogConfig struct {
 type TTSConfig struct {
 	DefaultProvider string          `mapstructure:"default_provider"`
 	Edge            TTSEdgeConfig   `mapstructure:"edge"`
+	MiMo            TTSMiMoConfig   `mapstructure:"mimo"`
 }
 
 type TTSEdgeConfig struct {
 	BaseURL string `mapstructure:"base_url"`
 	Token   string `mapstructure:"token"`
+}
+
+type TTSMiMoConfig struct {
+	APIKey  string `mapstructure:"api_key"`
+	BaseURL string `mapstructure:"base_url"`
+	Model   string `mapstructure:"model"`
 }
 
 func Load() (*Config, error) {

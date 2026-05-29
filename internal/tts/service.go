@@ -20,6 +20,7 @@ type Config struct {
 	DefaultProvider string      `mapstructure:"default_provider"`
 	DefaultVoice    string      `mapstructure:"default_voice"`
 	Edge            EdgeConfig  `mapstructure:"edge"`
+	MiMo            MiMoConfig  `mapstructure:"mimo"`
 }
 
 const fallbackVoice = "Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)"
@@ -38,6 +39,10 @@ func NewService(cfg Config, db *sql.DB) *Service {
 
 	if cfg.Edge.BaseURL != "" {
 		s.providers["edge"] = NewEdgeProvider(cfg.Edge)
+	}
+
+	if cfg.MiMo.APIKey != "" {
+		s.providers["mimo"] = NewMiMoProvider(cfg.MiMo)
 	}
 
 	return s
