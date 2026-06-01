@@ -24,7 +24,7 @@ func (s *MySQLStore) ListBooks(ctx context.Context, query string, limit, offset 
 		offset = 0
 	}
 
-	where := "WHERE status = 1"
+	where := "WHERE (status = 'active' OR status = '1')"
 	args := []any{}
 	query = strings.TrimSpace(query)
 	if query != "" {
@@ -44,7 +44,8 @@ func (s *MySQLStore) ListBooks(ctx context.Context, query string, limit, offset 
 
 	listArgs := append(append([]any{}, args...), limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT book_key, title, author, filename, storage_path, language, chapter_count, file_size, content_sha1
+SELECT book_key, title, author, description, format, filename, storage_path,
+       cover_storage_path, language, chapter_count, word_count, file_size, content_sha1
 FROM catalog_books `+where+`
 ORDER BY title ASC, book_key ASC
 LIMIT ? OFFSET ?`, listArgs...)
@@ -69,9 +70,10 @@ LIMIT ? OFFSET ?`, listArgs...)
 
 func (s *MySQLStore) GetBook(ctx context.Context, id string) (Book, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT book_key, title, author, filename, storage_path, language, chapter_count, file_size, content_sha1
+SELECT book_key, title, author, description, format, filename, storage_path,
+       cover_storage_path, language, chapter_count, word_count, file_size, content_sha1
 FROM catalog_books
-WHERE book_key = ? AND status = 1`, id)
+WHERE book_key = ? AND (status = 'active' OR status = '1')`, id)
 	book, err := scanBook(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Book{}, ErrNotFound
@@ -88,24 +90,32 @@ type bookScanner interface {
 
 func scanBook(scanner bookScanner) (Book, error) {
 	var book Book
-	var author, language, sha1 sql.NullString
-	var chapterCount sql.NullInt64
+	var author, description, format, coverPath, language, sha1 sql.NullString
+	var chapterCount, wordCount sql.NullInt64
 	if err := scanner.Scan(
 		&book.ID,
 		&book.Title,
 		&author,
+		&description,
+		&format,
 		&book.Filename,
 		&book.Path,
+		&coverPath,
 		&language,
 		&chapterCount,
+		&wordCount,
 		&book.FileSize,
 		&sha1,
 	); err != nil {
 		return Book{}, err
 	}
 	book.Author = author.String
+	book.Description = description.String
+	book.Format = format.String
+	book.CoverStoragePath = coverPath.String
 	book.Language = language.String
 	book.ChapterCount = int(chapterCount.Int64)
+	book.WordCount = wordCount.Int64
 	book.ContentSHA1 = sha1.String
 	return book, nil
 }

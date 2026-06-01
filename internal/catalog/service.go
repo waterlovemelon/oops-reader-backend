@@ -27,15 +27,19 @@ type Service struct {
 }
 
 type Book struct {
-	ID           string
-	Title        string
-	Author       string
-	Filename     string
-	Path         string
-	Language     string
-	ChapterCount int
-	FileSize     int64
-	ContentSHA1  string
+	ID               string
+	Title            string
+	Author           string
+	Description      string
+	Format           string
+	Filename         string
+	Path             string
+	CoverStoragePath string
+	Language         string
+	ChapterCount     int
+	WordCount        int64
+	FileSize         int64
+	ContentSHA1      string
 }
 
 type Store interface {

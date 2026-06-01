@@ -9,14 +9,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oops-reader/oops-reader-backend/internal/catalog"
+	"github.com/oops-reader/oops-reader-backend/internal/transport/http/middleware"
 )
 
 type CatalogHandler struct {
-	service *catalog.Service
+	service       *catalog.Service
+	shelfStore    catalog.ShelfStore
+	commentsStore catalog.CommentsStore
 }
 
-func NewCatalogHandler(service *catalog.Service) *CatalogHandler {
-	return &CatalogHandler{service: service}
+func NewCatalogHandler(service *catalog.Service, shelfStore catalog.ShelfStore, commentsStore catalog.CommentsStore) *CatalogHandler {
+	return &CatalogHandler{service: service, shelfStore: shelfStore, commentsStore: commentsStore}
 }
 
 func (h *CatalogHandler) ListBooks(c *gin.Context) {
@@ -45,7 +48,172 @@ func (h *CatalogHandler) GetBook(c *gin.Context) {
 		writeCatalogError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": h.bookJSON(c, *book)})
+	data := h.bookJSON(c, *book)
+	if userID, ok := middleware.CurrentUserID(c); ok && h.shelfStore != nil {
+		shelf, err := h.shelfStore.GetShelf(c.Request.Context(), userID, book.ID)
+		if err == nil {
+			data["shelf"] = shelfJSON(shelf)
+		} else {
+			data["shelf"] = gin.H{
+				"in_library":   false,
+				"shelf_status": nil,
+				"last_read_at": nil,
+			}
+		}
+	} else {
+		data["shelf"] = gin.H{
+			"in_library":   false,
+			"shelf_status": nil,
+			"last_read_at": nil,
+		}
+	}
+	commentTotal := 0
+	if h.commentsStore != nil {
+		if total, err := h.commentsStore.CountPublished(c.Request.Context(), book.ID); err == nil {
+			commentTotal = total
+		}
+	}
+	data["comment_summary"] = gin.H{"total": commentTotal}
+	c.JSON(http.StatusOK, gin.H{"data": data})
+}
+
+type addToShelfRequest struct {
+	LocalBookID string `json:"local_book_id"`
+}
+
+func (h *CatalogHandler) AddToShelf(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization required"})
+		return
+	}
+	if h.shelfStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "shelf service unavailable"})
+		return
+	}
+	bookID := c.Param("id")
+	// Verify book exists and is active.
+	if _, err := h.service.GetBook(bookID); err != nil {
+		writeCatalogError(c, err)
+		return
+	}
+	var req addToShelfRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	state, err := h.shelfStore.UpsertShelf(c.Request.Context(), userID, bookID, req.LocalBookID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"book_id":      bookID,
+		"in_library":   state.InLibrary,
+		"shelf_status": nullableString(state.ShelfStatus),
+	}})
+}
+
+func shelfJSON(state catalog.ShelfState) gin.H {
+	return gin.H{
+		"in_library":   state.InLibrary,
+		"shelf_status": nullableString(state.ShelfStatus),
+		"last_read_at": state.LastReadAt,
+	}
+}
+
+func (h *CatalogHandler) ListComments(c *gin.Context) {
+	bookID := c.Param("id")
+	// Verify book exists.
+	if _, err := h.service.GetBook(bookID); err != nil {
+		writeCatalogError(c, err)
+		return
+	}
+	page, pageSize := pagination(c)
+	if h.commentsStore == nil {
+		c.JSON(http.StatusOK, gin.H{"data": []any{}, "pagination": gin.H{"page": page, "page_size": pageSize, "total": 0}})
+		return
+	}
+	comments, total, err := h.commentsStore.ListComments(c.Request.Context(), bookID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	items := make([]gin.H, 0, len(comments))
+	for _, cc := range comments {
+		items = append(items, catalogCommentJSON(cc))
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data": items,
+		"pagination": gin.H{
+			"page": page, "page_size": pageSize, "total": total,
+		},
+	})
+}
+
+type createCommentRequest struct {
+	Content string `json:"content"`
+}
+
+func (h *CatalogHandler) CreateComment(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization required"})
+		return
+	}
+	if h.commentsStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "comments service unavailable"})
+		return
+	}
+	bookID := c.Param("id")
+	// Verify book exists and is active.
+	if _, err := h.service.GetBook(bookID); err != nil {
+		writeCatalogError(c, err)
+		return
+	}
+	var req createCommentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content is required"})
+		return
+	}
+	if len([]rune(content)) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content must be 1000 characters or less"})
+		return
+	}
+	comment, err := h.commentsStore.CreateComment(c.Request.Context(), catalog.BookComment{
+		BookID:  bookID,
+		UserID:  userID,
+		Content: content,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": catalogCommentJSON(comment)})
+}
+
+func catalogCommentJSON(c catalog.BookComment) gin.H {
+	authorID := ""
+	if c.UserID > 0 {
+		authorID = strconv.FormatUint(c.UserID, 10)
+	}
+	return gin.H{
+		"id":      c.ID,
+		"book_id": c.BookID,
+		"author": gin.H{
+			"id":           authorID,
+			"display_name": c.DisplayName,
+		},
+		"source":     c.Source,
+		"content":    c.Content,
+		"like_count": c.LikeCount,
+		"created_at": c.CreatedAt,
+	}
 }
 
 func (h *CatalogHandler) Download(c *gin.Context) {
@@ -136,12 +304,20 @@ func (h *CatalogHandler) bookJSON(c *gin.Context, book catalog.Book) gin.H {
 		"id":            book.ID,
 		"title":         book.Title,
 		"author":        book.Author,
-		"description":   "",
+		"description":   book.Description,
 		"cover_url":     absolutePath(c, "/v1/catalog/books/"+book.ID+"/cover"),
 		"download_url":  absolutePath(c, "/v1/catalog/books/"+book.ID+"/download"),
 		"language":      book.Language,
 		"chapter_count": book.ChapterCount,
+		"word_count":    nullablePositiveInt64(book.WordCount),
 	}
+}
+
+func nullablePositiveInt64(value int64) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
 }
 
 func writeCatalogError(c *gin.Context, err error) {

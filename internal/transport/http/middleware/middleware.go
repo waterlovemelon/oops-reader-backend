@@ -111,3 +111,25 @@ func CurrentUserID(c *gin.Context) (uint64, bool) {
 	}
 	return value, true
 }
+
+// OptionalAuth extracts user_id from a valid Bearer token if present,
+// but does not abort the request if the header is missing or invalid.
+func OptionalAuth(identityService *identity.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.Next()
+			return
+		}
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.Next()
+			return
+		}
+		claims, err := identityService.ValidateAccessToken(c.Request.Context(), parts[1])
+		if err == nil {
+			c.Set("user_id", claims.UserID)
+		}
+		c.Next()
+	}
+}

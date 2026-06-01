@@ -92,6 +92,12 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	}
 	identityService := identity.NewService(identityStore, cfg.JWT.Secret)
 	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
+	var shelfStore catalog.ShelfStore
+	var commentsStore catalog.CommentsStore
+	if db != nil {
+		shelfStore = catalog.NewMySQLShelfStore(db)
+		commentsStore = catalog.NewMySQLCommentsStore(db)
+	}
 	communityService := community.NewServiceWithDB(db)
 	communityStorage := community.NewLocalStorage(community.LocalStorageConfig{
 		BasePath:  cfg.Community.Images.LocalPath,
@@ -101,7 +107,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	backupService := backup.NewService(backup.NewMySQLStore(db))
 
 	identityHandler := handlers.NewIdentityHandler(identityService)
-	catalogHandler := handlers.NewCatalogHandler(catalogService)
+	catalogHandler := handlers.NewCatalogHandler(catalogService, shelfStore, commentsStore)
 	communityHandler := handlers.NewCommunityHandler(communityService, communityStorage)
 	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
 	backupHandler := handlers.NewBackupHandler(backupService)
@@ -156,7 +162,10 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		catalogRoutes := api.Group("/catalog")
 		{
 			catalogRoutes.GET("/books", catalogHandler.ListBooks)
-			catalogRoutes.GET("/books/:id", catalogHandler.GetBook)
+			catalogRoutes.GET("/books/:id", middleware.OptionalAuth(identityService), catalogHandler.GetBook)
+			catalogRoutes.POST("/books/:id/shelf", authRequired, catalogHandler.AddToShelf)
+			catalogRoutes.GET("/books/:id/comments", catalogHandler.ListComments)
+			catalogRoutes.POST("/books/:id/comments", authRequired, catalogHandler.CreateComment)
 			catalogRoutes.GET("/books/:id/cover", catalogHandler.Cover)
 			catalogRoutes.GET("/books/:id/download", catalogHandler.Download)
 			catalogRoutes.HEAD("/books/:id/download", catalogHandler.Download)
