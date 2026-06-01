@@ -100,12 +100,13 @@ func (s *Service) ListBooks(query string, page, pageSize int) ([]Book, int, erro
 	}
 	if s.store != nil {
 		books, total, err := s.store.ListBooks(context.Background(), query, pageSize, (page-1)*pageSize)
-		if err == nil && total > 0 {
-			return books, total, nil
-		}
-		if err != nil && !errors.Is(err, ErrNotFound) {
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return []Book{}, 0, nil
+			}
 			return nil, 0, err
 		}
+		return books, total, nil
 	}
 
 	books, err := s.scan()
@@ -242,6 +243,7 @@ func (s *Service) findBook(id string) (Book, error) {
 		if !errors.Is(err, ErrNotFound) {
 			return Book{}, err
 		}
+		return Book{}, fmt.Errorf("%w: book %s", ErrNotFound, id)
 	}
 
 	books, err := s.scan()

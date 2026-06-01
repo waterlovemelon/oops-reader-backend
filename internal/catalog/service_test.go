@@ -129,7 +129,7 @@ func TestServiceUsesStoreWhenCatalogIndexIsAvailable(t *testing.T) {
 	}
 }
 
-func TestServiceFallsBackToDirectoryWhenCatalogIndexIsEmpty(t *testing.T) {
+func TestServiceDoesNotFallBackToDirectoryWhenStoreIsConfigured(t *testing.T) {
 	root := t.TempDir()
 	writeCatalogEPUB(t, filepath.Join(root, "Fallback Book.epub"), "Fallback Title", "Fallback Author", map[string]string{
 		"OPS/chapter.xhtml": "<html><body><h1>Fallback</h1><p>From scan.</p></body></html>",
@@ -140,11 +140,13 @@ func TestServiceFallsBackToDirectoryWhenCatalogIndexIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListBooks() error = %v", err)
 	}
-	if total != 1 || len(items) != 1 {
-		t.Fatalf("total/items = %d/%d, want 1/1", total, len(items))
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("total/items = %d/%d, want 0/0 — store is configured, should not fall back to scan", total, len(items))
 	}
-	if items[0].ID != "fallback-book" {
-		t.Fatalf("fallback ID = %q, want fallback-book", items[0].ID)
+
+	_, err = service.GetBook("fallback-book")
+	if err == nil {
+		t.Fatal("GetBook() expected error for book not in store, got nil")
 	}
 }
 
