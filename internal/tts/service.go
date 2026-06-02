@@ -9,10 +9,11 @@ import (
 
 // Service manages TTS providers and routes synthesis requests.
 type Service struct {
-	mu           sync.RWMutex
-	providers    map[string]TTSProvider
-	defaultVoice string
-	db           *sql.DB
+	mu              sync.RWMutex
+	providers       map[string]TTSProvider
+	defaultProvider string
+	defaultVoice    string
+	db              *sql.DB
 }
 
 // Config holds all TTS provider configurations.
@@ -31,10 +32,16 @@ func NewService(cfg Config, db *sql.DB) *Service {
 		defaultVoice = fallbackVoice
 	}
 
+	defaultProv := cfg.DefaultProvider
+	if defaultProv == "" {
+		defaultProv = "edge"
+	}
+
 	s := &Service{
-		providers:    make(map[string]TTSProvider),
-		defaultVoice: defaultVoice,
-		db:           db,
+		providers:       make(map[string]TTSProvider),
+		defaultProvider: defaultProv,
+		defaultVoice:    defaultVoice,
+		db:              db,
 	}
 
 	if cfg.Edge.BaseURL != "" {
@@ -71,10 +78,14 @@ func (s *Service) Provider(name string) (TTSProvider, error) {
 	return p, nil
 }
 
-// Default returns the first registered provider name.
+// Default returns the configured default provider name, falling back to edge.
 func (s *Service) Default() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if _, ok := s.providers[s.defaultProvider]; ok {
+		return s.defaultProvider
+	}
+	// Fallback: return any available provider, edge last.
 	if _, ok := s.providers["edge"]; ok {
 		return "edge"
 	}
