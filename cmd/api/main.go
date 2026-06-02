@@ -94,10 +94,15 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	catalogService := catalog.NewServiceWithDB(catalog.DefaultRoot(), db)
 	var shelfStore catalog.ShelfStore
 	var commentsStore catalog.CommentsStore
+	var recommendationStore catalog.RecommendationStore
 	if db != nil {
 		shelfStore = catalog.NewMySQLShelfStore(db)
 		commentsStore = catalog.NewMySQLCommentsStore(db)
+		recommendationStore = catalog.NewMySQLRecommendationStore(db)
+	} else {
+		recommendationStore = catalog.NewNoopRecommendationStore()
 	}
+	recommendationService := catalog.NewRecommendationService(recommendationStore)
 	communityService := community.NewServiceWithDB(db)
 	communityStorage := community.NewLocalStorage(community.LocalStorageConfig{
 		BasePath:  cfg.Community.Images.LocalPath,
@@ -108,6 +113,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 
 	identityHandler := handlers.NewIdentityHandler(identityService)
 	catalogHandler := handlers.NewCatalogHandler(catalogService, shelfStore, commentsStore)
+	recommendationHandler := handlers.NewRecommendationHandler(recommendationService)
 	communityHandler := handlers.NewCommunityHandler(communityService, communityStorage)
 	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
 	backupHandler := handlers.NewBackupHandler(backupService)
@@ -172,6 +178,9 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 			catalogRoutes.HEAD("/books/:id/download", catalogHandler.Download)
 			catalogRoutes.GET("/books/:id/manifest", catalogHandler.Manifest)
 			catalogRoutes.GET("/books/:id/chapters/:chapter_id", catalogHandler.Chapter)
+<<<<<<< HEAD
+			catalogRoutes.GET("/recommendations/current", recommendationHandler.Current)
+			catalogRoutes.GET("/recommendations", recommendationHandler.History)
 			catalogRoutes.GET("/books/:id/reading/open", catalogHandler.ReadingOpen)
 			catalogRoutes.HEAD("/books/:id/reading/open", catalogHandler.ReadingOpen)
 			catalogRoutes.GET("/books/:id/reading/versions/:version/index", catalogHandler.ReadingIndex)
