@@ -54,9 +54,7 @@ func (h *TTSHandler) Synthesize(c *gin.Context) {
 		_, prefVoice, _ := h.service.ProviderForUser(c.Request.Context(), userID)
 		voice = prefVoice
 	}
-	if voice == "" {
-		voice = h.service.DefaultVoice()
-	}
+	// Don't fall back to DefaultVoice here — each provider handles its own default.
 
 	req := tts.SynthesizeRequest{
 		Text:   text,
