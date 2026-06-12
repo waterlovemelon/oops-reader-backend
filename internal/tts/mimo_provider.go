@@ -1,6 +1,7 @@
 package tts
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -45,14 +46,28 @@ func NewMiMoProvider(cfg MiMoConfig) *MiMoProvider {
 	}
 }
 
-func (p *MiMoProvider) Name() string  { return "mimo" }
-func (p *MiMoProvider) Label() string { return "Xiaomi MiMo TTS" }
+func (p *MiMoProvider) Name() string          { return "mimo" }
+func (p *MiMoProvider) Label() string         { return "Xiaomi MiMo TTS" }
+func (p *MiMoProvider) DefaultVoice() string  { return "mimo_default" }
+
+// Capabilities returns what this provider supports.
+func (p *MiMoProvider) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		Synthesize:       true,
+		Stream:           true,
+		StreamLowLatency: true,
+		StreamFormat:     "pcm16",
+		SampleRate:       24000,
+		Channels:         1,
+	}
+}
 
 // mimoRequest is the OpenAI-compatible chat completions request body.
 type mimoRequest struct {
 	Model    string         `json:"model"`
 	Messages []mimoMessage  `json:"messages"`
 	Audio    mimoAudioSpec  `json:"audio"`
+	Stream   bool           `json:"stream,omitempty"`
 }
 
 type mimoMessage struct {
@@ -65,7 +80,7 @@ type mimoAudioSpec struct {
 	Voice  string `json:"voice,omitempty"`
 }
 
-// mimoResponse is the OpenAI-compatible chat completions response.
+// mimoResponse is the OpenAI-compatible chat completions response (non-streaming).
 type mimoResponse struct {
 	Choices []struct {
 		Message struct {
@@ -73,6 +88,21 @@ type mimoResponse struct {
 				Data string `json:"data"` // base64-encoded audio
 			} `json:"audio"`
 		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+// mimoStreamDelta is the SSE chunk for streaming responses.
+type mimoStreamDelta struct {
+	Choices []struct {
+		Delta struct {
+			Audio struct {
+				Data string `json:"data"` // base64-encoded PCM audio chunk
+			} `json:"audio"`
+		} `json:"delta"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -95,8 +125,13 @@ func (p *MiMoProvider) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 		format = req.Format
 	}
 
+	stylePrompt := "请用自然流畅的语调朗读以下内容。"
+	if req.StylePrompt != "" {
+		stylePrompt = req.StylePrompt
+	}
+
 	messages := []mimoMessage{
-		{Role: "user", Content: "请用自然流畅的语调朗读以下内容。"},
+		{Role: "user", Content: stylePrompt},
 		{Role: "assistant", Content: req.Text},
 	}
 
@@ -163,6 +198,150 @@ func (p *MiMoProvider) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 	return &SynthesizeResponse{
 		AudioData: audioData,
 		Format:    format,
+	}, nil
+}
+
+// StreamSynthesize starts a streaming TTS synthesis, returning PCM audio chunks progressively.
+func (p *MiMoProvider) StreamSynthesize(ctx context.Context, req SynthesizeRequest) (*StreamSynthesizeResponse, error) {
+	if p.apiKey == "" {
+		return nil, fmt.Errorf("mimo tts: api_key not configured")
+	}
+
+	voice := req.Voice
+	if voice == "" {
+		voice = "mimo_default"
+	}
+
+	stylePrompt := "请用自然流畅的语调朗读以下内容。"
+	if req.StylePrompt != "" {
+		stylePrompt = req.StylePrompt
+	}
+
+	messages := []mimoMessage{
+		{Role: "user", Content: stylePrompt},
+		{Role: "assistant", Content: req.Text},
+	}
+
+	body := mimoRequest{
+		Model:    p.model,
+		Messages: messages,
+		Audio: mimoAudioSpec{
+			Format: "pcm16",
+			Voice:  voice,
+		},
+		Stream: true,
+	}
+
+	jsonData, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("mimo tts: marshal request: %w", err)
+	}
+
+	url := strings.TrimRight(p.baseURL, "/") + "/chat/completions"
+
+	// Create a streaming-aware HTTP client (no overall timeout)
+	transport := &http.Transport{
+		ResponseHeaderTimeout: 8 * time.Second,
+	}
+	streamClient := &http.Client{Transport: transport}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return nil, fmt.Errorf("mimo tts: build stream request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("api-key", p.apiKey)
+
+	resp, err := streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("mimo tts: stream request failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("mimo tts: stream status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	chunks := make(chan AudioChunk, 32)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer resp.Body.Close()
+		defer close(chunks)
+		defer close(errs)
+
+		scanner := bufio.NewScanner(resp.Body)
+		// Increase buffer size for large audio chunks
+		scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Skip empty lines
+			if line == "" {
+				continue
+			}
+
+			// Only process data: lines
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+
+			// Check for stream end
+			if data == "[DONE]" {
+				return
+			}
+
+			// Parse the SSE chunk
+			var delta mimoStreamDelta
+			if err := json.Unmarshal([]byte(data), &delta); err != nil {
+				errs <- fmt.Errorf("mimo tts: parse stream chunk: %w", err)
+				return
+			}
+
+			if delta.Error != nil {
+				errs <- fmt.Errorf("mimo tts: stream api error: %s", delta.Error.Message)
+				return
+			}
+
+			if len(delta.Choices) == 0 {
+				continue
+			}
+
+			audioB64 := delta.Choices[0].Delta.Audio.Data
+			if audioB64 == "" {
+				continue
+			}
+
+			// Base64 decode the PCM audio data
+			pcmData, err := base64.StdEncoding.DecodeString(audioB64)
+			if err != nil {
+				errs <- fmt.Errorf("mimo tts: decode stream audio base64: %w", err)
+				return
+			}
+
+			// Send PCM chunk
+			select {
+			case chunks <- AudioChunk{Data: pcmData}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			errs <- fmt.Errorf("mimo tts: stream read error: %w", err)
+		}
+	}()
+
+	return &StreamSynthesizeResponse{
+		Format:     "pcm16",
+		SampleRate: 24000,
+		Channels:   1,
+		Chunks:     chunks,
+		Err:        errs,
 	}, nil
 }
 

@@ -34,8 +34,9 @@ func NewEdgeProvider(cfg EdgeConfig) *EdgeProvider {
 	}
 }
 
-func (p *EdgeProvider) Name() string  { return "edge" }
-func (p *EdgeProvider) Label() string { return "Edge TTS" }
+func (p *EdgeProvider) Name() string          { return "edge" }
+func (p *EdgeProvider) Label() string         { return "Edge TTS" }
+func (p *EdgeProvider) DefaultVoice() string  { return "Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)" }
 
 func (p *EdgeProvider) Synthesize(ctx context.Context, req SynthesizeRequest) (*SynthesizeResponse, error) {
 	if p.baseURL == "" {
@@ -154,6 +155,14 @@ func (v *edgeVoice) toVoice() Voice {
 			Personalities: v.Characteristics.Personalities,
 			Categories:    v.Characteristics.Categories,
 		},
+	}
+}
+
+// Capabilities returns what this provider supports.
+func (p *EdgeProvider) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		Synthesize: true,
+		Stream:     false,
 	}
 }
 

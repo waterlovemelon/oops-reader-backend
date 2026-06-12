@@ -12,35 +12,20 @@ type Service struct {
 	mu              sync.RWMutex
 	providers       map[string]TTSProvider
 	defaultProvider string
-	defaultVoice    string
 	db              *sql.DB
 }
 
 // Config holds all TTS provider configurations.
 type Config struct {
 	DefaultProvider string      `mapstructure:"default_provider"`
-	DefaultVoice    string      `mapstructure:"default_voice"`
 	Edge            EdgeConfig  `mapstructure:"edge"`
 	MiMo            MiMoConfig  `mapstructure:"mimo"`
 }
 
-const fallbackVoice = "Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)"
-
 func NewService(cfg Config, db *sql.DB) *Service {
-	defaultVoice := cfg.DefaultVoice
-	if defaultVoice == "" {
-		defaultVoice = fallbackVoice
-	}
-
-	defaultProv := cfg.DefaultProvider
-	if defaultProv == "" {
-		defaultProv = "edge"
-	}
-
 	s := &Service{
 		providers:       make(map[string]TTSProvider),
-		defaultProvider: defaultProv,
-		defaultVoice:    defaultVoice,
+		defaultProvider: cfg.DefaultProvider,
 		db:              db,
 	}
 
@@ -53,11 +38,6 @@ func NewService(cfg Config, db *sql.DB) *Service {
 	}
 
 	return s
-}
-
-// DefaultVoice returns the default voice identifier.
-func (s *Service) DefaultVoice() string {
-	return s.defaultVoice
 }
 
 // Register adds a provider at runtime.
@@ -78,14 +58,15 @@ func (s *Service) Provider(name string) (TTSProvider, error) {
 	return p, nil
 }
 
-// Default returns the configured default provider name, falling back to edge.
+// Default returns the configured default provider name, falling back to "edge" or the first registered provider.
 func (s *Service) Default() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if _, ok := s.providers[s.defaultProvider]; ok {
-		return s.defaultProvider
+	if s.defaultProvider != "" {
+		if _, ok := s.providers[s.defaultProvider]; ok {
+			return s.defaultProvider
+		}
 	}
-	// Fallback: return any available provider, edge last.
 	if _, ok := s.providers["edge"]; ok {
 		return "edge"
 	}
@@ -95,17 +76,26 @@ func (s *Service) Default() string {
 	return ""
 }
 
-// ListProviders returns info about all registered providers.
+// capabilityProvider is an optional interface for providers that report capabilities.
+type capabilityProvider interface {
+	Capabilities() ProviderCapabilities
+}
+
+// ListProviders returns info about all registered providers, including capabilities.
 func (s *Service) ListProviders() []ProviderInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	infos := make([]ProviderInfo, 0, len(s.providers))
 	for name, p := range s.providers {
-		infos = append(infos, ProviderInfo{
+		info := ProviderInfo{
 			Name:    name,
 			Label:   p.Label(),
 			Enabled: true,
-		})
+		}
+		if cp, ok := p.(capabilityProvider); ok {
+			info.Capabilities = cp.Capabilities()
+		}
+		infos = append(infos, info)
 	}
 	return infos
 }

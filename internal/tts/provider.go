@@ -4,12 +4,13 @@ import "context"
 
 // SynthesizeRequest holds parameters for a single TTS synthesis call.
 type SynthesizeRequest struct {
-	Text   string `json:"text"`
-	Voice  string `json:"voice"`
-	Format string `json:"format,omitempty"` // "mp3", "wav", "ogg" — provider-specific
-	Rate   int    `json:"rate"`             // percent offset from 1.0, e.g. 0, +20, -10
-	Pitch  int    `json:"pitch"`            // percent offset from 1.0
-	Volume int    `json:"volume"`           // percent offset from 1.0
+	Text        string `json:"text"`
+	Voice       string `json:"voice"`
+	Format      string `json:"format,omitempty"` // "mp3", "wav", "ogg", "pcm16" — provider-specific
+	Rate        int    `json:"rate"`              // percent offset from 1.0, e.g. 0, +20, -10
+	Pitch       int    `json:"pitch"`             // percent offset from 1.0
+	Volume      int    `json:"volume"`            // percent offset from 1.0
+	StylePrompt string `json:"stylePrompt,omitempty"`
 }
 
 // SynthesizeResponse is the audio result from a TTS provider.
@@ -34,17 +35,49 @@ type VoiceCharacteristics struct {
 	Categories    map[string][]string `json:"categories,omitempty"`
 }
 
+// ProviderCapabilities describes what a TTS provider can do.
+type ProviderCapabilities struct {
+	Synthesize       bool   `json:"synthesize"`
+	Stream           bool   `json:"stream"`
+	StreamLowLatency bool   `json:"streamLowLatency"`
+	StreamFormat     string `json:"streamFormat,omitempty"`
+	SampleRate       int    `json:"sampleRate,omitempty"`
+	Channels         int    `json:"channels,omitempty"`
+}
+
 // ProviderInfo is a lightweight descriptor returned by the providers list API.
 type ProviderInfo struct {
-	Name    string `json:"name"`
-	Label   string `json:"label"`
-	Enabled bool   `json:"enabled"`
+	Name         string              `json:"name"`
+	Label        string              `json:"label"`
+	Enabled      bool                `json:"enabled"`
+	Capabilities ProviderCapabilities `json:"capabilities,omitempty"`
 }
 
 // TTSProvider is the interface every TTS backend must implement.
 type TTSProvider interface {
 	Name() string
 	Label() string
+	DefaultVoice() string
 	Synthesize(ctx context.Context, req SynthesizeRequest) (*SynthesizeResponse, error)
 	ListVoices(ctx context.Context, locale string) ([]Voice, error)
+}
+
+// StreamingTTSProvider is an optional interface for providers that support streaming.
+// Providers that implement this interface can deliver audio chunks progressively.
+type StreamingTTSProvider interface {
+	StreamSynthesize(ctx context.Context, req SynthesizeRequest) (*StreamSynthesizeResponse, error)
+}
+
+// StreamSynthesizeResponse holds the streaming audio response.
+type StreamSynthesizeResponse struct {
+	Format     string
+	SampleRate int
+	Channels   int
+	Chunks     <-chan AudioChunk
+	Err        <-chan error
+}
+
+// AudioChunk represents a single chunk of audio data in a stream.
+type AudioChunk struct {
+	Data []byte
 }

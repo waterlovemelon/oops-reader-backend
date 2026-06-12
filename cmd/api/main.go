@@ -250,6 +250,8 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		{
 			synthRoutes.GET("/synthesize", ttsHandler.Synthesize)
 			synthRoutes.GET("/synthesize/:provider", ttsHandler.Synthesize)
+			synthRoutes.POST("/stream", ttsHandler.StreamSynthesize)
+			synthRoutes.POST("/stream/:provider", ttsHandler.StreamSynthesize)
 		}
 	}
 

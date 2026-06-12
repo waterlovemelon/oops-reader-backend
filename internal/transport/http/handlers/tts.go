@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/oops-reader/oops-reader-backend/internal/transport/http/middleware"
@@ -54,7 +56,9 @@ func (h *TTSHandler) Synthesize(c *gin.Context) {
 		_, prefVoice, _ := h.service.ProviderForUser(c.Request.Context(), userID)
 		voice = prefVoice
 	}
-	// Don't fall back to DefaultVoice here — each provider handles its own default.
+	if voice == "" {
+		voice = provider.DefaultVoice()
+	}
 
 	req := tts.SynthesizeRequest{
 		Text:   text,
@@ -72,6 +76,126 @@ func (h *TTSHandler) Synthesize(c *gin.Context) {
 
 	contentType := formatToMIME(resp.Format)
 	c.Data(http.StatusOK, contentType, resp.AudioData)
+}
+
+// StreamSynthesize handles streaming TTS synthesis.
+//
+//	POST /v1/tts/stream
+//	POST /v1/tts/stream/:provider
+func (h *TTSHandler) StreamSynthesize(c *gin.Context) {
+	userID, _ := middleware.CurrentUserID(c)
+
+	// Parse request body
+	var req struct {
+		Text        string `json:"text" binding:"required"`
+		Voice       string `json:"voice"`
+		StylePrompt string `json:"stylePrompt"`
+		Rate        int    `json:"rate"`
+		Pitch       int    `json:"pitch"`
+		Volume      int    `json:"volume"`
+		Format      string `json:"format"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
+		return
+	}
+
+	if req.Text == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text is required"})
+		return
+	}
+
+	// Resolve provider
+	providerName := c.Param("provider")
+	if providerName == "" {
+		p, _, err := h.service.ProviderForUser(c.Request.Context(), userID)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
+		providerName = p.Name()
+	}
+
+	provider, err := h.service.Provider(providerName)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Check if provider supports streaming
+	streamingProvider, ok := provider.(tts.StreamingTTSProvider)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider does not support streaming"})
+		return
+	}
+
+	// Resolve voice
+	voice := req.Voice
+	if voice == "" {
+		_, prefVoice, _ := h.service.ProviderForUser(c.Request.Context(), userID)
+		voice = prefVoice
+	}
+	if voice == "" {
+		voice = provider.DefaultVoice()
+	}
+
+	format := req.Format
+	if format == "" {
+		format = "pcm16"
+	}
+
+	synthesizeReq := tts.SynthesizeRequest{
+		Text:        req.Text,
+		Voice:       voice,
+		Format:      format,
+		Rate:        req.Rate,
+		Pitch:       req.Pitch,
+		Volume:      req.Volume,
+		StylePrompt: req.StylePrompt,
+	}
+
+	// Start streaming
+	stream, err := streamingProvider.StreamSynthesize(c.Request.Context(), synthesizeReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Set response headers for PCM stream
+	c.Header("Content-Type", "audio/L16; rate="+strconv.Itoa(stream.SampleRate)+"; channels="+strconv.Itoa(stream.Channels))
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-TTS-Provider", providerName)
+	c.Header("X-Audio-Format", stream.Format)
+	c.Header("X-Audio-Sample-Rate", strconv.Itoa(stream.SampleRate))
+	c.Header("X-Audio-Channels", strconv.Itoa(stream.Channels))
+	c.Header("X-Audio-Sample-Format", "s16le")
+	c.Status(http.StatusOK)
+
+	flusher, _ := c.Writer.(http.Flusher)
+
+	for {
+		select {
+		case chunk, ok := <-stream.Chunks:
+			if !ok {
+				return
+			}
+			if _, err := c.Writer.Write(chunk.Data); err != nil {
+				log.Printf("tts stream: write error: %v", err)
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case err := <-stream.Err:
+			if err != nil {
+				log.Printf("tts stream error: %v", err)
+			}
+			return
+		case <-c.Request.Context().Done():
+			log.Println("tts stream: client disconnected")
+			return
+		}
+	}
 }
 
 // ListVoices returns voices from the active or specified provider.
@@ -104,7 +228,10 @@ func (h *TTSHandler) ListVoices(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, voices)
+	c.JSON(http.StatusOK, gin.H{
+		"provider": providerName,
+		"voices":   voices,
+	})
 }
 
 // ListProviders returns all registered TTS providers.
