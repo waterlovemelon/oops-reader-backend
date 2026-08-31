@@ -1,6 +1,7 @@
 package tts
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -45,14 +46,28 @@ func NewMiMoProvider(cfg MiMoConfig) *MiMoProvider {
 	}
 }
 
-func (p *MiMoProvider) Name() string  { return "mimo" }
-func (p *MiMoProvider) Label() string { return "Xiaomi MiMo TTS" }
+func (p *MiMoProvider) Name() string         { return "mimo" }
+func (p *MiMoProvider) Label() string        { return "Xiaomi MiMo TTS" }
+func (p *MiMoProvider) DefaultVoice() string { return "mimo_default" }
+
+// Capabilities returns the low-latency features supported by MiMo TTS.
+func (p *MiMoProvider) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		Synthesize:       true,
+		Stream:           true,
+		StreamLowLatency: p.model == "mimo-v2.5-tts",
+		StreamFormat:     "pcm16",
+		SampleRate:       24000,
+		Channels:         1,
+	}
+}
 
 // mimoRequest is the OpenAI-compatible chat completions request body.
 type mimoRequest struct {
-	Model    string         `json:"model"`
-	Messages []mimoMessage  `json:"messages"`
-	Audio    mimoAudioSpec  `json:"audio"`
+	Model    string        `json:"model"`
+	Messages []mimoMessage `json:"messages"`
+	Audio    mimoAudioSpec `json:"audio"`
+	Stream   bool          `json:"stream,omitempty"`
 }
 
 type mimoMessage struct {
@@ -80,6 +95,107 @@ type mimoResponse struct {
 	} `json:"error,omitempty"`
 }
 
+type mimoStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Audio struct {
+				Data string `json:"data"`
+			} `json:"audio"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+// StreamSynthesize forwards MiMo's SSE audio deltas as decoded PCM bytes.
+func (p *MiMoProvider) StreamSynthesize(ctx context.Context, req SynthesizeRequest, write func([]byte) error) (StreamMetadata, error) {
+	if p.apiKey == "" {
+		return StreamMetadata{}, fmt.Errorf("mimo tts: api_key not configured")
+	}
+	if write == nil {
+		return StreamMetadata{}, fmt.Errorf("mimo tts: stream writer is nil")
+	}
+
+	voice := req.Voice
+	if voice == "" {
+		voice = p.DefaultVoice()
+	}
+	stylePrompt := req.StylePrompt
+	if stylePrompt == "" {
+		stylePrompt = "请用自然流畅的语调朗读以下内容。"
+	}
+	body, err := json.Marshal(mimoRequest{
+		Model: p.model,
+		Messages: []mimoMessage{
+			{Role: "user", Content: stylePrompt},
+			{Role: "assistant", Content: req.Text},
+		},
+		Audio:  mimoAudioSpec{Format: "pcm16", Voice: voice},
+		Stream: true,
+	})
+	if err != nil {
+		return StreamMetadata{}, fmt.Errorf("mimo tts: marshal stream request: %w", err)
+	}
+
+	url := strings.TrimRight(p.baseURL, "/") + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		return StreamMetadata{}, fmt.Errorf("mimo tts: build stream request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("api-key", p.apiKey)
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return StreamMetadata{}, fmt.Errorf("mimo tts: stream request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return StreamMetadata{}, fmt.Errorf("mimo tts: stream status %d: %s", resp.StatusCode, string(body))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			return StreamMetadata{Format: "pcm16", SampleRate: 24000, Channels: 1}, nil
+		}
+
+		var chunk mimoStreamResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return StreamMetadata{}, fmt.Errorf("mimo tts: decode stream event: %w", err)
+		}
+		if chunk.Error != nil {
+			return StreamMetadata{}, fmt.Errorf("mimo tts: stream api error: %s", chunk.Error.Message)
+		}
+		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Audio.Data == "" {
+			continue
+		}
+		pcm, err := base64.StdEncoding.DecodeString(chunk.Choices[0].Delta.Audio.Data)
+		if err != nil {
+			return StreamMetadata{}, fmt.Errorf("mimo tts: decode stream audio: %w", err)
+		}
+		if len(pcm) > 0 {
+			if err := write(pcm); err != nil {
+				return StreamMetadata{}, fmt.Errorf("mimo tts: write stream audio: %w", err)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return StreamMetadata{}, fmt.Errorf("mimo tts: read stream: %w", err)
+	}
+	return StreamMetadata{Format: "pcm16", SampleRate: 24000, Channels: 1}, nil
+}
+
 func (p *MiMoProvider) Synthesize(ctx context.Context, req SynthesizeRequest) (*SynthesizeResponse, error) {
 	if p.apiKey == "" {
 		return nil, fmt.Errorf("mimo tts: api_key not configured")
@@ -96,8 +212,11 @@ func (p *MiMoProvider) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 	}
 
 	messages := []mimoMessage{
-		{Role: "user", Content: "请用自然流畅的语调朗读以下内容。"},
+		{Role: "user", Content: req.StylePrompt},
 		{Role: "assistant", Content: req.Text},
+	}
+	if messages[0].Content == "" {
+		messages[0].Content = "请用自然流畅的语调朗读以下内容。"
 	}
 
 	body := mimoRequest{
