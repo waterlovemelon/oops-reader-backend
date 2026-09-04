@@ -171,6 +171,16 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 			catalogRoutes.HEAD("/books/:id/download", catalogHandler.Download)
 			catalogRoutes.GET("/books/:id/manifest", catalogHandler.Manifest)
 			catalogRoutes.GET("/books/:id/chapters/:chapter_id", catalogHandler.Chapter)
+			catalogRoutes.GET("/books/:id/reading/open", catalogHandler.ReadingOpen)
+			catalogRoutes.HEAD("/books/:id/reading/open", catalogHandler.ReadingOpen)
+			catalogRoutes.GET("/books/:id/reading/versions/:version/index", catalogHandler.ReadingIndex)
+			catalogRoutes.HEAD("/books/:id/reading/versions/:version/index", catalogHandler.ReadingIndex)
+			catalogRoutes.GET("/books/:id/reading/versions/:version/segments/:segment_id", catalogHandler.ReadingSegment)
+			catalogRoutes.HEAD("/books/:id/reading/versions/:version/segments/:segment_id", catalogHandler.ReadingSegment)
+			catalogRoutes.GET("/books/:id/reading/versions/:version/resources/*resource_id", catalogHandler.ReadingResource)
+			catalogRoutes.HEAD("/books/:id/reading/versions/:version/resources/*resource_id", catalogHandler.ReadingResource)
+			catalogRoutes.GET("/books/:id/reading/versions/:version/resources-index", catalogHandler.ReadingResourcesIndex)
+			catalogRoutes.HEAD("/books/:id/reading/versions/:version/resources-index", catalogHandler.ReadingResourcesIndex)
 		}
 
 		communityRoutes := api.Group("/community")

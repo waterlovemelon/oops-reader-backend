@@ -1,11 +1,24 @@
 package handlers
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log"
+	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/oops-reader/oops-reader-backend/internal/catalog"
@@ -16,6 +29,116 @@ type CatalogHandler struct {
 	service       *catalog.Service
 	shelfStore    catalog.ShelfStore
 	commentsStore catalog.CommentsStore
+}
+
+// The limiter reserves at most one small packet per Write. This keeps a large
+// background download from reserving the entire output window and lets a
+// foreground reading request acquire the next packet promptly.
+const (
+	// 3 Mbps is 375,000 bytes/s; retain a little headroom for HTTP/TCP
+	// overhead so the physical link is not saturated by payload alone.
+	readingEgressBytesPerSecond = 360000
+	readingEgressChunkSize      = 16 * 1024
+)
+
+var readingEgress struct {
+	mu                sync.Mutex
+	tokens            float64
+	lastRefill        time.Time
+	foregroundWaiters int
+}
+
+func waitReadingEgress(ctx context.Context, n int, background bool) error {
+	if n <= 0 {
+		return nil
+	}
+	registered := false
+	for {
+		readingEgress.mu.Lock()
+		now := time.Now()
+		if readingEgress.lastRefill.IsZero() {
+			readingEgress.lastRefill = now
+			readingEgress.tokens = readingEgressChunkSize
+		}
+		elapsed := now.Sub(readingEgress.lastRefill).Seconds()
+		if elapsed > 0 {
+			readingEgress.tokens += elapsed * readingEgressBytesPerSecond
+			if readingEgress.tokens > readingEgressChunkSize {
+				readingEgress.tokens = readingEgressChunkSize
+			}
+			readingEgress.lastRefill = now
+		}
+		if (!background || readingEgress.foregroundWaiters == 0) && readingEgress.tokens >= float64(n) {
+			readingEgress.tokens -= float64(n)
+			if registered {
+				readingEgress.foregroundWaiters--
+			}
+			readingEgress.mu.Unlock()
+			return nil
+		}
+		if !background && !registered {
+			readingEgress.foregroundWaiters++
+			registered = true
+		}
+		wait := 10 * time.Millisecond
+		if !(background && readingEgress.foregroundWaiters > 0) {
+			deficit := float64(n) - readingEgress.tokens
+			if deficit > 0 {
+				wait = time.Duration(deficit / readingEgressBytesPerSecond * float64(time.Second))
+				if wait < time.Millisecond {
+					wait = time.Millisecond
+				}
+			}
+		}
+		readingEgress.mu.Unlock()
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if registered {
+				readingEgress.mu.Lock()
+				readingEgress.foregroundWaiters--
+				readingEgress.mu.Unlock()
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func streamReadingBody(ctx context.Context, w io.Writer, body []byte, background bool) error {
+	for len(body) > 0 {
+		n := len(body)
+		if n > readingEgressChunkSize {
+			n = readingEgressChunkSize
+		}
+		chunk := body[:n]
+		if err := waitReadingEgress(ctx, len(chunk), background); err != nil {
+			return err
+		}
+		written, err := w.Write(chunk)
+		if err != nil {
+			return err
+		}
+		if written != len(chunk) {
+			return io.ErrShortWrite
+		}
+		body = body[n:]
+	}
+	return nil
+}
+
+type readingRateLimitedWriter struct {
+	w          io.Writer
+	ctx        context.Context
+	background bool
+}
+
+func (w readingRateLimitedWriter) Write(body []byte) (int, error) {
+	if err := streamReadingBody(w.ctx, w.w, body, w.background); err != nil {
+		return 0, err
+	}
+	return len(body), nil
 }
 
 func NewCatalogHandler(service *catalog.Service, shelfStore catalog.ShelfStore, commentsStore catalog.CommentsStore) *CatalogHandler {
@@ -222,7 +345,33 @@ func (h *CatalogHandler) Download(c *gin.Context) {
 		writeCatalogError(c, err)
 		return
 	}
-	c.FileAttachment(assetPath, filepath.Base(assetPath))
+	file, err := os.Open(assetPath)
+	if err != nil {
+		writeCatalogError(c, err)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeCatalogError(c, err)
+		return
+	}
+	c.Header("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(filepath.Base(assetPath), `"`, "")+`"`)
+	// ServeContent retains the old endpoint's HEAD and Range semantics. Its
+	// writes pass through the packetized limiter, so a 100 MB download cannot
+	// block a reader by reserving 100 MB up front.
+	limited := &readingRateLimitedResponseWriter{ResponseWriter: c.Writer, ctx: c.Request.Context(), background: true}
+	http.ServeContent(limited, c.Request, filepath.Base(assetPath), info.ModTime(), file)
+}
+
+type readingRateLimitedResponseWriter struct {
+	http.ResponseWriter
+	ctx        context.Context
+	background bool
+}
+
+func (w *readingRateLimitedResponseWriter) Write(body []byte) (int, error) {
+	return len(body), streamReadingBody(w.ctx, w.ResponseWriter, body, w.background)
 }
 
 func (h *CatalogHandler) Cover(c *gin.Context) {
@@ -297,6 +446,520 @@ func (h *CatalogHandler) Chapter(c *gin.Context) {
 		"next_chapter_id": nullableString(nextID),
 		"prev_chapter_id": nullableString(prevID),
 	}})
+}
+
+func (h *CatalogHandler) ReadingOpen(c *gin.Context) {
+	started := time.Now()
+	id := c.Param("id")
+	readingLog(c, "open start book=%s chapter=%s segment=%s unit=%s", id, c.Query("chapter_id"), c.Query("segment_id"), c.Query("unit"))
+	version := c.DefaultQuery("version", "current")
+	if version == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "version is required"})
+		return
+	}
+	m, _, err := h.service.LoadReadingManifest(id, version)
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	segmentID := c.Query("segment_id")
+	chapterID := c.Query("chapter_id")
+	unitRaw, hasUnit := c.GetQuery("unit")
+	var unit int64
+	if hasUnit {
+		parsed, parseErr := strconv.ParseInt(unitRaw, 10, 64)
+		if parseErr != nil || parsed < 0 || parsed > m.TotalUnits {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reading unit"})
+			return
+		}
+		unit = parsed
+	}
+	refs, err := readingSegmentRefs(m)
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	chapters := make(map[string]catalog.ReadingChapter, len(m.Chapters))
+	for _, chapter := range m.Chapters {
+		chapters[chapter.ID] = chapter
+	}
+	if chapterID != "" {
+		if _, ok := chapters[chapterID]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown chapter_id"})
+			return
+		}
+	}
+	if segmentID != "" {
+		ref, ok := refs[segmentID]
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown segment_id"})
+			return
+		}
+		if chapterID != "" && ref.ChapterID != chapterID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "chapter_id and segment_id disagree"})
+			return
+		}
+		if hasUnit && unit != m.TotalUnits && (unit < ref.StartUnit || unit >= ref.EndUnit) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unit and segment_id disagree"})
+			return
+		}
+	}
+	var target readingSegmentRef
+	if segmentID != "" {
+		target = refs[segmentID]
+	} else if hasUnit {
+		if unit == m.TotalUnits {
+			// The end locator belongs to the last segment, rather than the first
+			// segment of the last chapter.
+			for _, ref := range readingRefsInOrder(m, refs) {
+				if ref.EndUnit == m.TotalUnits {
+					target = ref
+					break
+				}
+			}
+		} else {
+			target = findReadingSegment(refs, unit)
+		}
+		if target.SegmentID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unit is not readable"})
+			return
+		}
+		if chapterID != "" && target.ChapterID != chapterID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unit and chapter_id disagree"})
+			return
+		}
+	} else if chapterID != "" {
+		chapter := chapters[chapterID]
+		for _, ref := range readingRefsInOrder(m, refs) {
+			if ref.ChapterID == chapterID {
+				target = ref
+				break
+			}
+		}
+		if target.SegmentID == "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "chapter has no readable segment"})
+			return
+		}
+		unit = target.StartUnit
+		_ = chapter
+	} else {
+		ordered := readingRefsInOrder(m, refs)
+		if len(ordered) == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "reading content has no readable segment"})
+			return
+		}
+		target = ordered[0]
+		unit = target.StartUnit
+	}
+	if !hasUnit && segmentID != "" {
+		unit = target.StartUnit
+	}
+	if hasUnit && unit == m.TotalUnits && target.EndUnit != m.TotalUnits {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unit is outside segment"})
+		return
+	}
+	body, _, err := h.service.LoadReadingFile(id, m.ContentVersion, "segments/"+target.SegmentID+".json")
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	var value map[string]any
+	if err := json.Unmarshal(body, &value); err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	if err := validateReadingSegment(value, id, m.ContentVersion, target.SegmentID); err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	resolved := resolveReadingLocator(value, target, unit, m.TotalUnits)
+	response := gin.H{"manifest": m, "segment": value, "resolved_locator": resolved}
+	readingLog(c, "open ready book=%s segment=%s chapter=%s blocks=%d elapsed_ms=%d", id, target.SegmentID, target.ChapterID, readingBlockCount(value), time.Since(started).Milliseconds())
+	writeReadingJSON(c, http.StatusOK, response, false)
+}
+
+type readingSegmentRef struct {
+	SegmentID, ChapterID string
+	StartUnit, EndUnit   int64
+}
+
+func readingSegmentRefs(m catalog.ReadingManifest) (map[string]readingSegmentRef, error) {
+	refs := make(map[string]readingSegmentRef)
+	if len(m.SegmentIndex) > 0 {
+		var items []struct {
+			SegmentID string `json:"segment_id"`
+			ChapterID string `json:"chapter_id"`
+			StartUnit int64  `json:"start_unit"`
+			EndUnit   int64  `json:"end_unit"`
+		}
+		if err := json.Unmarshal(m.SegmentIndex, &items); err != nil {
+			return nil, fmt.Errorf("decode segment index: %w", err)
+		}
+		for _, item := range items {
+			if item.SegmentID == "" || item.EndUnit < item.StartUnit || item.StartUnit < 0 {
+				return nil, fmt.Errorf("invalid segment index")
+			}
+			refs[item.SegmentID] = readingSegmentRef{item.SegmentID, item.ChapterID, item.StartUnit, item.EndUnit}
+		}
+	}
+	for _, chapter := range m.Chapters {
+		for _, id := range chapter.SegmentIDs {
+			if _, ok := refs[id]; !ok {
+				refs[id] = readingSegmentRef{id, chapter.ID, chapter.StartUnit, chapter.EndUnit}
+			} else if refs[id].ChapterID == "" {
+				r := refs[id]
+				r.ChapterID = chapter.ID
+				refs[id] = r
+			}
+		}
+	}
+	return refs, nil
+}
+
+func readingRefsInOrder(m catalog.ReadingManifest, refs map[string]readingSegmentRef) []readingSegmentRef {
+	ordered := make([]readingSegmentRef, 0, len(refs))
+	seen := make(map[string]bool)
+	for _, item := range m.Chapters {
+		for _, id := range item.SegmentIDs {
+			if ref, ok := refs[id]; ok && !seen[id] {
+				ordered = append(ordered, ref)
+				seen[id] = true
+			}
+		}
+	}
+	for _, item := range refs {
+		if !seen[item.SegmentID] {
+			ordered = append(ordered, item)
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].StartUnit < ordered[j].StartUnit })
+	return ordered
+}
+
+func findReadingSegment(refs map[string]readingSegmentRef, unit int64) readingSegmentRef {
+	items := make([]readingSegmentRef, 0, len(refs))
+	for _, ref := range refs {
+		items = append(items, ref)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].StartUnit < items[j].StartUnit })
+	lo, hi := 0, len(items)
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if unit < items[mid].StartUnit {
+			hi = mid
+		} else if unit >= items[mid].EndUnit {
+			lo = mid + 1
+		} else {
+			return items[mid]
+		}
+	}
+	return readingSegmentRef{}
+}
+
+func validateReadingSegment(value map[string]any, bookID, version, segmentID string) error {
+	for key, expected := range map[string]string{"book_id": bookID, "content_version": version, "segment_id": segmentID} {
+		if actual, ok := value[key].(string); ok && actual != expected {
+			return fmt.Errorf("reading segment %s mismatch", key)
+		}
+	}
+	return nil
+}
+
+func resolveReadingLocator(value map[string]any, target readingSegmentRef, unit, total int64) gin.H {
+	chapterID := target.ChapterID
+	if v, ok := value["chapter_id"].(string); ok && v != "" {
+		chapterID = v
+	}
+	locator := gin.H{"book_id": value["book_id"], "content_version": value["content_version"], "chapter_id": chapterID, "segment_id": target.SegmentID, "inline_offset": int64(0), "bias": "leading"}
+	blocks, _ := value["blocks"].([]any)
+	if len(blocks) == 0 {
+		return locator
+	}
+	chosen := -1
+	for i, raw := range blocks {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		start, end, ok := readingBlockRange(block)
+		if !ok {
+			continue
+		}
+		if unit >= start && unit < end {
+			chosen = i
+			break
+		}
+	}
+	if unit >= target.EndUnit || unit >= total {
+		chosen = len(blocks) - 1
+	}
+	if chosen < 0 {
+		chosen = 0
+	}
+	if block, ok := blocks[chosen].(map[string]any); ok {
+		start, end, valid := readingBlockRange(block)
+		offset := int64(0)
+		if valid {
+			offset = unit - start
+			if offset < 0 {
+				offset = 0
+			}
+			if offset > end-start {
+				offset = end - start
+			}
+		}
+		if unit >= target.EndUnit || unit >= total {
+			if valid {
+				offset = end - start
+			}
+			locator["bias"] = "trailing"
+		}
+		locator["inline_offset"] = offset
+		locator["block_id"] = block["id"]
+		locator["source_block_id"] = block["source_block_id"]
+		locator["source_block_index"] = block["source_block_index"]
+		// block_index is the stable source block index. A segment may contain
+		// only a slice of a chapter, so its local array position is not a
+		// locator and must not be returned here.
+		locator["block_index"] = block["source_block_index"]
+	}
+	return locator
+}
+
+func readingBlockRange(block map[string]any) (int64, int64, bool) {
+	start, okStart := jsonInt64(block["start_unit"])
+	end, okEnd := jsonInt64(block["end_unit"])
+	return start, end, okStart && okEnd && end >= start
+}
+
+func jsonInt64(value any) (int64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return int64(n), n == float64(int64(n))
+	case json.Number:
+		v, err := n.Int64()
+		return v, err == nil
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
+func (h *CatalogHandler) ReadingIndex(c *gin.Context) {
+	readingLog(c, "index start book=%s version=%s", c.Param("id"), c.Param("version"))
+	m, _, err := h.service.LoadReadingManifest(c.Param("id"), c.Param("version"))
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	writeReadingJSON(c, http.StatusOK, m, c.Param("version") != "current")
+}
+
+func (h *CatalogHandler) ReadingSegment(c *gin.Context) {
+	id, version, segmentID := c.Param("id"), c.Param("version"), c.Param("segment_id")
+	readingLog(c, "segment start book=%s version=%s segment=%s", id, version, segmentID)
+	m, _, err := h.service.LoadReadingManifest(id, version)
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	refs, err := readingSegmentRefs(m)
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	if _, ok := refs[segmentID]; !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	body, _, err := h.service.LoadReadingFile(id, m.ContentVersion, "segments/"+segmentID+".json")
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	var value map[string]any
+	if err := json.Unmarshal(body, &value); err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	if err := validateReadingSegment(value, id, m.ContentVersion, segmentID); err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	writeReadingBytes(c, http.StatusOK, body, version != "current", "application/json")
+	readingLog(c, "segment ready book=%s segment=%s bytes=%d", id, segmentID, len(body))
+}
+
+func (h *CatalogHandler) ReadingResource(c *gin.Context) {
+	id, version := c.Param("id"), c.Param("version")
+	resourceID := strings.TrimPrefix(c.Param("resource_id"), "/")
+	readingLog(c, "resource start book=%s version=%s resource=%s", id, version, resourceID)
+	// Only resources published in resources.json are addressable. This keeps
+	// an otherwise safe relative path from becoming an arbitrary artifact
+	// listing endpoint.
+	indexBody, _, indexErr := h.service.LoadReadingFile(id, version, "resources.json")
+	if indexErr != nil {
+		writeReadingError(c, indexErr)
+		return
+	}
+	var resourceIndex map[string]any
+	if err := json.Unmarshal(indexBody, &resourceIndex); err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	allowed := false
+	if _, ok := resourceIndex[resourceID]; ok {
+		allowed = true
+	} else {
+		for _, raw := range resourceIndex {
+			if item, ok := raw.(map[string]any); ok && item["resource_id"] == resourceID {
+				allowed = true
+				break
+			}
+		}
+	}
+	if !allowed {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	body, path, err := h.service.LoadReadingFile(id, version, "resources/"+resourceID)
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	mediaType := mime.TypeByExtension(filepath.Ext(path))
+	if mediaType == "" {
+		mediaType = http.DetectContentType(body)
+	}
+	writeReadingBytesPriority(c, http.StatusOK, body, version != "current", mediaType, true)
+	readingLog(c, "resource ready book=%s resource=%s bytes=%d", id, resourceID, len(body))
+}
+
+func (h *CatalogHandler) ReadingResourcesIndex(c *gin.Context) {
+	readingLog(c, "resources-index start book=%s version=%s", c.Param("id"), c.Param("version"))
+	body, _, err := h.service.LoadReadingFile(c.Param("id"), c.Param("version"), "resources.json")
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	writeReadingBytes(c, http.StatusOK, body, c.Param("version") != "current", "application/json")
+	readingLog(c, "resources-index ready book=%s bytes=%d", c.Param("id"), len(body))
+}
+
+func readingLog(c *gin.Context, format string, args ...any) {
+	trace := c.GetHeader("X-Reader-Trace")
+	if trace == "" {
+		trace = "-"
+	}
+	log.Printf("[reading][trace=%s] "+format, append([]any{trace}, args...)...)
+}
+
+func readingBlockCount(value map[string]any) int {
+	blocks, ok := value["blocks"].([]any)
+	if !ok {
+		return 0
+	}
+	return len(blocks)
+}
+
+func writeReadingJSON(c *gin.Context, status int, value any, immutable bool) {
+	body, err := json.Marshal(gin.H{"data": value})
+	if err != nil {
+		writeReadingError(c, err)
+		return
+	}
+	writeReadingBytes(c, status, body, immutable, "application/json; charset=utf-8")
+}
+
+func writeReadingBytes(c *gin.Context, status int, body []byte, immutable bool, mediaType string) {
+	writeReadingBytesPriority(c, status, body, immutable, mediaType, false)
+}
+
+func writeReadingBytesPriority(c *gin.Context, status int, body []byte, immutable bool, mediaType string, background bool) {
+	writeReadingPayload(c, status, body, immutable, mediaType, background)
+}
+
+func writeReadingPayload(c *gin.Context, status int, body []byte, immutable bool, mediaType string, background bool) {
+	etag := fmt.Sprintf("\"%x\"", sha256.Sum256(body))
+	c.Header("ETag", etag)
+	if immutable {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		c.Header("Cache-Control", "private, no-cache")
+	}
+	if etagMatches(c.GetHeader("If-None-Match"), etag) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+	if strings.Contains(c.GetHeader("Accept-Encoding"), "gzip") && compressibleMediaType(mediaType) {
+		var compressed bytes.Buffer
+		zw := gzip.NewWriter(&compressed)
+		_, _ = zw.Write(body)
+		_ = zw.Close()
+		body = compressed.Bytes()
+		c.Header("Content-Encoding", "gzip")
+		c.Header("Vary", "Accept-Encoding")
+	}
+	c.Header("Content-Type", mediaType)
+	c.Header("Content-Length", strconv.Itoa(len(body)))
+	if c.Request.Method == http.MethodHead {
+		c.Status(status)
+		return
+	}
+	if len(body) == 0 {
+		c.Status(status)
+		return
+	}
+	c.Status(status)
+	_ = streamReadingBody(c.Request.Context(), c.Writer, body, background)
+}
+
+func compressibleMediaType(mediaType string) bool {
+	return strings.HasPrefix(mediaType, "application/json") || strings.HasPrefix(mediaType, "text/") || mediaType == "image/svg+xml"
+}
+
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == etag || candidate == "W/"+etag {
+			return true
+		}
+	}
+	return false
+}
+
+func writeReadingError(c *gin.Context, err error) {
+	readingLog(c, "request failed status=%d error=%v", readingErrorStatus(err), err)
+	if errors.Is(err, catalog.ErrInvalidReadingParam) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reading parameter"})
+		return
+	}
+	if errors.Is(err, catalog.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if errors.Is(err, catalog.ErrReadingNotReady) {
+		c.JSON(http.StatusConflict, gin.H{"error": "reading content is not ready"})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+}
+
+func readingErrorStatus(err error) int {
+	if errors.Is(err, catalog.ErrInvalidReadingParam) {
+		return http.StatusBadRequest
+	}
+	if errors.Is(err, catalog.ErrNotFound) {
+		return http.StatusNotFound
+
+	}
+	if errors.Is(err, catalog.ErrReadingNotReady) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 func (h *CatalogHandler) bookJSON(c *gin.Context, book catalog.Book) gin.H {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,8 +23,9 @@ const catalogRootEnv = "OOPS_READER_CATALOG_ROOT"
 var ErrNotFound = errors.New("not found")
 
 type Service struct {
-	root  string
-	store Store
+	root        string
+	readingRoot string
+	store       Store
 }
 
 type Book struct {
@@ -88,7 +90,11 @@ func NewServiceWithStore(root string, store Store) *Service {
 	if strings.TrimSpace(root) == "" {
 		root = defaultRoot
 	}
-	return &Service{root: root, store: store}
+	readingRoot := strings.TrimSpace(os.Getenv("OOPS_READER_READING_ROOT"))
+	if readingRoot == "" {
+		readingRoot = root
+	}
+	return &Service{root: root, readingRoot: readingRoot, store: store}
 }
 
 func (s *Service) ListBooks(query string, page, pageSize int) ([]Book, int, error) {
@@ -164,6 +170,27 @@ func (s *Service) OpenAssetPath(id string) (string, error) {
 	return s.AssetPath(id)
 }
 
+// ReadingVersionRoot returns the immutable, preprocessed reading directory.
+// It deliberately never falls back to parsing the source EPUB on a request.
+func (s *Service) ReadingVersionRoot(id, version string) (string, error) {
+	if _, err := safeReadingComponent(id); err != nil {
+		return "", fmt.Errorf("%w: book id", ErrInvalidReadingParam)
+	}
+	if version == "" {
+		version = "current"
+	}
+	if version != "current" {
+		if _, err := safeReadingComponent(version); err != nil {
+			return "", fmt.Errorf("%w: version", ErrInvalidReadingParam)
+		}
+	}
+	_, err := s.findBook(id)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(s.readingRoot, ".reading", id, version), nil
+}
+
 func (s *Service) GetManifest(id string) (*Manifest, error) {
 	book, parsed, err := s.parseBook(id)
 	if err != nil {
@@ -207,6 +234,23 @@ func (s *Service) GetCover(id string) (*Cover, error) {
 	book, err := s.findBook(id)
 	if err != nil {
 		return nil, err
+	}
+	// Manager imports may store an extracted cover separately from the
+	// original EPUB. Prefer that immutable file so a missing source EPUB does
+	// not make an otherwise available cover return 500.
+	if strings.TrimSpace(book.CoverStoragePath) != "" {
+		coverPath := s.resolvePath(book.CoverStoragePath)
+		data, readErr := os.ReadFile(coverPath)
+		if readErr == nil && len(data) > 0 {
+			mediaType := mime.TypeByExtension(filepath.Ext(coverPath))
+			if mediaType == "" {
+				mediaType = "application/octet-stream"
+			}
+			return &Cover{MediaType: mediaType, Data: data}, nil
+		}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("read stored cover: %w", readErr)
+		}
 	}
 	cover, err := content.ExtractEPUBCover(book.Path)
 	if err != nil {

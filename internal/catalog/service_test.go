@@ -129,6 +129,34 @@ func TestServiceUsesStoreWhenCatalogIndexIsAvailable(t *testing.T) {
 	}
 }
 
+func TestServiceServesStoredCoverWhenOriginalEPUBIsMissing(t *testing.T) {
+	root := t.TempDir()
+	coverPath := filepath.Join(root, "covers", "stored.jpg")
+	if err := os.MkdirAll(filepath.Dir(coverPath), 0o755); err != nil {
+		t.Fatalf("mkdir cover: %v", err)
+	}
+	if err := os.WriteFile(coverPath, []byte("stored-cover"), 0o644); err != nil {
+		t.Fatalf("write cover: %v", err)
+	}
+
+	service := NewServiceWithStore(root, &fakeStore{books: []Book{{
+		ID:               "missing-original",
+		Path:             filepath.Join(root, "originals", "missing.epub"),
+		CoverStoragePath: "covers/stored.jpg",
+	}}})
+
+	cover, err := service.GetCover("missing-original")
+	if err != nil {
+		t.Fatalf("GetCover() error = %v", err)
+	}
+	if cover.MediaType != "image/jpeg" {
+		t.Fatalf("media type = %q, want image/jpeg", cover.MediaType)
+	}
+	if string(cover.Data) != "stored-cover" {
+		t.Fatalf("cover data = %q, want stored-cover", string(cover.Data))
+	}
+}
+
 func TestServiceDoesNotFallBackToDirectoryWhenStoreIsConfigured(t *testing.T) {
 	root := t.TempDir()
 	writeCatalogEPUB(t, filepath.Join(root, "Fallback Book.epub"), "Fallback Title", "Fallback Author", map[string]string{
