@@ -41,3 +41,13 @@ tts:
     api_key: "tp-c7hxf3c8kjqoffix0bcjq3rxxo0nmn3wdy4s5s1xmx050a0c"
     base_url: "https://token-plan-cn.xiaomimimo.com/v1"
     model: "mimo-v2.5-tts"
+  # Ordinary one-shot synthesis is kept conservative. Streaming playback
+  # requests consecutive text segments, so it has a separate larger bucket.
+  rate_limit:
+    enabled: true
+    rate: 30
+    burst: 5
+  stream_rate_limit:
+    enabled: true
+    rate: 120
+    burst: 20

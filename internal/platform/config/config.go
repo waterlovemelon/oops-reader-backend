@@ -57,10 +57,11 @@ type LogConfig struct {
 }
 
 type TTSConfig struct {
-	DefaultProvider string          `mapstructure:"default_provider"`
-	Edge            TTSEdgeConfig   `mapstructure:"edge"`
-	MiMo            TTSMiMoConfig   `mapstructure:"mimo"`
-	RateLimit       TTSRateLimit    `mapstructure:"rate_limit"`
+	DefaultProvider string        `mapstructure:"default_provider"`
+	Edge            TTSEdgeConfig `mapstructure:"edge"`
+	MiMo            TTSMiMoConfig `mapstructure:"mimo"`
+	RateLimit       TTSRateLimit  `mapstructure:"rate_limit"`
+	StreamRateLimit TTSRateLimit  `mapstructure:"stream_rate_limit"`
 }
 
 type TTSRateLimit struct {
@@ -144,8 +145,11 @@ func setDefaults() {
 	viper.SetDefault("tts.edge.base_url", "http://8.136.58.109:80")
 	viper.SetDefault("tts.edge.token", "")
 	viper.SetDefault("tts.rate_limit.enabled", true)
-	viper.SetDefault("tts.rate_limit.rate", 30)  // 30 requests per minute
-	viper.SetDefault("tts.rate_limit.burst", 5)   // burst of 5
+	viper.SetDefault("tts.rate_limit.rate", 30) // 30 requests per minute
+	viper.SetDefault("tts.rate_limit.burst", 5) // burst of 5
+	viper.SetDefault("tts.stream_rate_limit.enabled", true)
+	viper.SetDefault("tts.stream_rate_limit.rate", 120) // 120 streaming requests per minute
+	viper.SetDefault("tts.stream_rate_limit.burst", 20) // allow a playback buffer to fill
 
 	viper.SetDefault("community.images.local_path", "./data/community/images")
 	viper.SetDefault("community.images.public_url", "/community/images")

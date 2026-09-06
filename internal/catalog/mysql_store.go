@@ -68,6 +68,45 @@ LIMIT ? OFFSET ?`, listArgs...)
 	return books, total, nil
 }
 
+func (s *MySQLStore) ListPopularBooks(ctx context.Context, limit int) ([]Book, int, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	where := "WHERE (status = 'active' OR status = '1')"
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM catalog_books "+where).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count popular catalog books: %w", err)
+	}
+	if total == 0 {
+		return []Book{}, 0, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT book_key, title, author, description, format, filename, storage_path,
+       cover_storage_path, language, chapter_count, word_count, file_size, content_sha1
+FROM catalog_books `+where+`
+ORDER BY RAND()
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list popular catalog books: %w", err)
+	}
+	defer rows.Close()
+
+	books := []Book{}
+	for rows.Next() {
+		book, err := scanBook(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		books = append(books, book)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate popular catalog books: %w", err)
+	}
+	return books, total, nil
+}
+
 func (s *MySQLStore) GetBook(ctx context.Context, id string) (Book, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT book_key, title, author, description, format, filename, storage_path,

@@ -139,6 +139,71 @@ func TestProtectedRouteRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestTTSStreamingUsesAnIndependentRateLimit(t *testing.T) {
+	router := setupRouter(&config.Config{
+		JWT: config.JWTConfig{Secret: "test-secret"},
+		TTS: config.TTSConfig{
+			RateLimit:       config.TTSRateLimit{Enabled: true, Rate: 30, Burst: 5},
+			StreamRateLimit: config.TTSRateLimit{Enabled: true, Rate: 120, Burst: 20},
+		},
+	}, zap.NewNop(), nil)
+
+	accessToken := registerTestUser(t, router)
+
+	for i := 0; i < 6; i++ {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/v1/tts/synthesize/unknown?text=test", nil)
+		request.Header.Set("Authorization", "Bearer "+accessToken)
+		router.ServeHTTP(recorder, request)
+		want := http.StatusBadRequest
+		if i == 5 {
+			want = http.StatusTooManyRequests
+		}
+		if recorder.Code != want {
+			t.Fatalf("ordinary synthesis request %d status = %d, want %d", i+1, recorder.Code, want)
+		}
+	}
+
+	for i := 0; i < 6; i++ {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/tts/stream/unknown", strings.NewReader(`{"text":"test"}`))
+		request.Header.Set("Authorization", "Bearer "+accessToken)
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("stream request %d status = %d, body = %s; stream requests must not consume the ordinary synthesis bucket", i+1, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func registerTestUser(t *testing.T, router http.Handler) string {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/auth/register",
+		strings.NewReader(`{"email":"rate-limit@example.com","password":"password12345","nickname":"Reader","device_id":"test-device","platform":"linux"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var body struct {
+		Data struct {
+			AccessToken string `json:"access_token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	if body.Data.AccessToken == "" {
+		t.Fatal("register access token is empty")
+	}
+	return body.Data.AccessToken
+}
+
 func TestPasswordResetRequestIsGeneric(t *testing.T) {
 	router := setupRouter(&config.Config{
 		JWT: config.JWTConfig{Secret: "test-secret"},

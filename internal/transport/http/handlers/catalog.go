@@ -165,6 +165,26 @@ func (h *CatalogHandler) ListBooks(c *gin.Context) {
 	})
 }
 
+func (h *CatalogHandler) ListPopularBooks(c *gin.Context) {
+	_, pageSize := pagination(c)
+	books, total, err := h.service.ListPopularBooks(pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	items := make([]gin.H, 0, len(books))
+	for _, book := range books {
+		items = append(items, h.bookJSON(c, book))
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data": items,
+		"pagination": gin.H{
+			"page": 1, "page_size": pageSize, "total": total,
+		},
+	})
+}
+
 func (h *CatalogHandler) GetBook(c *gin.Context) {
 	book, err := h.service.GetBook(c.Param("id"))
 	if err != nil {

@@ -162,6 +162,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		catalogRoutes := api.Group("/catalog")
 		{
 			catalogRoutes.GET("/books", catalogHandler.ListBooks)
+			catalogRoutes.GET("/books/popular", catalogHandler.ListPopularBooks)
 			catalogRoutes.GET("/books/:id", middleware.OptionalAuth(identityService), catalogHandler.GetBook)
 			catalogRoutes.POST("/books/:id/shelf", authRequired, catalogHandler.AddToShelf)
 			catalogRoutes.GET("/books/:id/comments", catalogHandler.ListComments)
@@ -248,7 +249,9 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 			ttsRoutes.GET("/voices/:provider", authRequired, ttsHandler.ListVoices)
 			ttsRoutes.POST("/provider/select", authRequired, ttsHandler.SelectProvider)
 		}
-		// Synthesize routes with optional rate limiting.
+		// Ordinary synthesis remains intentionally conservative. Streaming playback
+		// requests short consecutive segments, so it uses an independent, larger
+		// bucket and cannot exhaust this one.
 		synthRoutes := ttsRoutes.Group("")
 		synthRoutes.Use(authRequired)
 		if cfg.TTS.RateLimit.Enabled {
@@ -260,8 +263,19 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		{
 			synthRoutes.GET("/synthesize", ttsHandler.Synthesize)
 			synthRoutes.GET("/synthesize/:provider", ttsHandler.Synthesize)
-			synthRoutes.POST("/stream", ttsHandler.StreamSynthesize)
-			synthRoutes.POST("/stream/:provider", ttsHandler.StreamSynthesize)
+		}
+
+		streamRoutes := ttsRoutes.Group("")
+		streamRoutes.Use(authRequired)
+		if cfg.TTS.StreamRateLimit.Enabled {
+			streamRoutes.Use(middleware.RateLimit(middleware.RateLimiterConfig{
+				Rate:  cfg.TTS.StreamRateLimit.Rate,
+				Burst: cfg.TTS.StreamRateLimit.Burst,
+			}))
+		}
+		{
+			streamRoutes.POST("/stream", ttsHandler.StreamSynthesize)
+			streamRoutes.POST("/stream/:provider", ttsHandler.StreamSynthesize)
 		}
 	}
 

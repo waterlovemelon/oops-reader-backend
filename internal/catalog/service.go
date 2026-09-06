@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/rand"
 	"mime"
 	"os"
 	"path/filepath"
@@ -47,6 +48,12 @@ type Book struct {
 type Store interface {
 	ListBooks(ctx context.Context, query string, limit, offset int) ([]Book, int, error)
 	GetBook(ctx context.Context, id string) (Book, error)
+}
+
+// PopularStore lets the database choose a fresh, server-owned selection for
+// the public popular-books shelf without changing the regular catalog order.
+type PopularStore interface {
+	ListPopularBooks(ctx context.Context, limit int) ([]Book, int, error)
 }
 
 type Manifest struct {
@@ -148,6 +155,31 @@ func (s *Service) ListBooks(query string, page, pageSize int) ([]Book, int, erro
 		end = total
 	}
 	return books[start:end], total, nil
+}
+
+func (s *Service) ListPopularBooks(pageSize int) ([]Book, int, error) {
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if s.store != nil {
+		if popularStore, ok := s.store.(PopularStore); ok {
+			books, total, err := popularStore.ListPopularBooks(context.Background(), pageSize)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					return []Book{}, 0, nil
+				}
+				return nil, 0, err
+			}
+			return books, total, nil
+		}
+	}
+
+	books, total, err := s.ListBooks("", 1, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	rand.Shuffle(len(books), func(i, j int) { books[i], books[j] = books[j], books[i] })
+	return books, total, nil
 }
 
 func (s *Service) GetBook(id string) (*Book, error) {
