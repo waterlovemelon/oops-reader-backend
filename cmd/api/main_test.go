@@ -96,16 +96,10 @@ func TestSetupRouterExposesMVPAPI(t *testing.T) {
 	}
 
 	coverRecorder := httptest.NewRecorder()
-	coverRequest := httptest.NewRequest(http.MethodGet, catalogBody.Data[0].CoverURL, nil)
+	coverRequest := httptest.NewRequest(http.MethodGet, catalogBody.Data[0].CoverURL+"?width_px=320", nil)
 	router.ServeHTTP(coverRecorder, coverRequest)
-	if coverRecorder.Code != http.StatusOK {
-		t.Fatalf("cover status = %d, body = %s", coverRecorder.Code, coverRecorder.Body.String())
-	}
-	if got := coverRecorder.Header().Get("Content-Type"); got != "image/jpeg" {
-		t.Fatalf("cover content type = %q, want image/jpeg", got)
-	}
-	if got := coverRecorder.Body.String(); got != "fake-jpeg-cover" {
-		t.Fatalf("cover body = %q, want fake-jpeg-cover", got)
+	if coverRecorder.Code != http.StatusNotFound {
+		t.Fatalf("cover without generated variants status = %d, body = %s", coverRecorder.Code, coverRecorder.Body.String())
 	}
 }
 

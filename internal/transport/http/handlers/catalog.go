@@ -395,12 +395,75 @@ func (w *readingRateLimitedResponseWriter) Write(body []byte) (int, error) {
 }
 
 func (h *CatalogHandler) Cover(c *gin.Context) {
-	cover, err := h.service.GetCover(c.Param("id"))
+	width, err := requestedImageWidth(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "width_px must be a positive integer"})
+		return
+	}
+	cover, err := h.service.GetCoverVariant(c.Param("id"), width)
 	if err != nil {
 		writeCatalogError(c, err)
 		return
 	}
-	c.Data(http.StatusOK, cover.MediaType, cover.Data)
+
+	file, err := os.Open(cover.Path)
+	if err != nil {
+		writeCatalogError(c, err)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeCatalogError(c, err)
+		return
+	}
+	if !info.Mode().IsRegular() {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cover variant is not a regular file"})
+		return
+	}
+
+	etag := `"` + cover.ContentSHA256 + `"`
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.Header("Content-Type", cover.MediaType)
+	c.Header("ETag", etag)
+	c.Header("Content-Location", canonicalCoverLocation(c, cover.Width))
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("X-Image-Variant", cover.Key)
+	c.Header("X-Image-Width", strconv.Itoa(cover.Width))
+	c.Header("X-Image-Height", strconv.Itoa(cover.Height))
+	if requestMatchesETag(c.Request, etag) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+	http.ServeContent(c.Writer, c.Request, filepath.Base(cover.Path), info.ModTime(), file)
+}
+
+func requestedImageWidth(c *gin.Context) (int, error) {
+	value := c.Query("width_px")
+	if value == "" {
+		return 0, catalog.ErrInvalidImageWidth
+	}
+	width, err := strconv.Atoi(value)
+	if err != nil || width <= 0 {
+		return 0, catalog.ErrInvalidImageWidth
+	}
+	return width, nil
+}
+
+func canonicalCoverLocation(c *gin.Context, width int) string {
+	return c.Request.URL.Path + "?width_px=" + strconv.Itoa(width)
+}
+
+func requestMatchesETag(request *http.Request, etag string) bool {
+	for _, value := range request.Header.Values("If-None-Match") {
+		for _, candidate := range strings.Split(value, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *CatalogHandler) Manifest(c *gin.Context) {
@@ -1004,6 +1067,14 @@ func nullablePositiveInt64(value int64) any {
 }
 
 func writeCatalogError(c *gin.Context, err error) {
+	if errors.Is(err, catalog.ErrInvalidImageWidth) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "width_px must be a positive integer"})
+		return
+	}
+	if errors.Is(err, catalog.ErrImageVariantNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "image variant not found"})
+		return
+	}
 	if errors.Is(err, catalog.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return

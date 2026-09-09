@@ -22,6 +22,9 @@ const defaultRoot = "/Users/jason/Workspace/Code/oops/reader/book-city/epub-book
 const catalogRootEnv = "OOPS_READER_CATALOG_ROOT"
 
 var ErrNotFound = errors.New("not found")
+var ErrInvalidImageWidth = errors.New("invalid image width")
+var ErrImageVariantNotFound = errors.New("image variant not found")
+var ErrInvalidImageVariant = errors.New("invalid image variant")
 
 type Service struct {
 	root        string
@@ -66,6 +69,17 @@ type Manifest struct {
 type Cover struct {
 	MediaType string
 	Data      []byte
+}
+
+// ImageVariant 是预生成的不可变图片变体。
+// Path 已校验，保证位于目录根路径内。
+type ImageVariant struct {
+	Key           string
+	Width         int
+	Height        int
+	MediaType     string
+	ContentSHA256 string
+	Path          string
 }
 
 type Chapter struct {
