@@ -5,12 +5,12 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -908,17 +908,109 @@ func (h *CatalogHandler) ReadingResource(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	body, path, err := h.service.LoadReadingFile(id, version, "resources/"+resourceID)
+	width, parseErr := requestedImageWidth(c)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "width_px must be a positive integer"})
+		return
+	}
+	variant, variantErr := h.readReadingResourceVariant(id, version, resourceID, width)
+	if variantErr != nil {
+		writeReadingError(c, variantErr)
+		return
+	}
+	file, err := os.Open(variant.Path)
 	if err != nil {
 		writeReadingError(c, err)
 		return
 	}
-	mediaType := mime.TypeByExtension(filepath.Ext(path))
-	if mediaType == "" {
-		mediaType = http.DetectContentType(body)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeReadingError(c, err)
+		return
 	}
-	writeReadingBytesPriority(c, http.StatusOK, body, version != "current", mediaType, true)
-	readingLog(c, "resource ready book=%s resource=%s bytes=%d", id, resourceID, len(body))
+	etag := `"` + variant.ETag + `"`
+	if version != "current" {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		c.Header("Cache-Control", "private, no-cache")
+	}
+	c.Header("ETag", etag)
+	c.Header("Content-Type", variant.MediaType)
+	c.Header("Content-Location", c.Request.URL.Path+"?width_px="+strconv.Itoa(variant.Width))
+	c.Header("X-Image-Variant", variant.VariantKey)
+	c.Header("X-Image-Width", strconv.Itoa(variant.Width))
+	c.Header("X-Image-Height", strconv.Itoa(variant.Height))
+	if etagMatches(c.GetHeader("If-None-Match"), etag) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+	limited := &readingRateLimitedResponseWriter{ResponseWriter: c.Writer, ctx: c.Request.Context(), background: true}
+	http.ServeContent(limited, c.Request, filepath.Base(variant.Path), info.ModTime(), file)
+	readingLog(c, "resource ready book=%s resource=%s variant=%s bytes=%d", id, resourceID, variant.VariantKey, info.Size())
+}
+
+type readingImageVariant struct {
+	Path       string
+	MediaType  string
+	ETag       string
+	VariantKey string
+	Width      int
+	Height     int
+}
+
+func (h *CatalogHandler) readReadingResourceVariant(bookID, version, resourceID string, width int) (readingImageVariant, error) {
+	manifestBody, _, err := h.service.LoadReadingFile(bookID, version, "resources/variants/"+resourceID+"/variants.json")
+	if err != nil {
+		return readingImageVariant{}, err
+	}
+	var manifest struct {
+		Version  int `json:"version"`
+		Variants []struct {
+			Key       string `json:"key"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+			Path      string `json:"path"`
+			MediaType string `json:"media_type"`
+			SHA256    string `json:"sha256"`
+		} `json:"variants"`
+	}
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil || manifest.Version != 1 {
+		return readingImageVariant{}, fmt.Errorf("%w: invalid image variants manifest", catalog.ErrNotFound)
+	}
+	best := -1
+	seenKeys := make(map[string]struct{}, len(manifest.Variants))
+	for i, variant := range manifest.Variants {
+		if (variant.Key != "small" && variant.Key != "medium" && variant.Key != "large") || variant.Width < 1 || variant.Height < 1 || filepath.Base(variant.Path) != variant.Path || variant.MediaType == "" || len(variant.SHA256) != 64 {
+			return readingImageVariant{}, fmt.Errorf("%w: invalid image variant", catalog.ErrNotFound)
+		}
+		if _, err := hex.DecodeString(variant.SHA256); err != nil {
+			return readingImageVariant{}, fmt.Errorf("%w: invalid image variant", catalog.ErrNotFound)
+		}
+		if _, exists := seenKeys[variant.Key]; exists {
+			return readingImageVariant{}, fmt.Errorf("%w: duplicate image variant", catalog.ErrNotFound)
+		}
+		seenKeys[variant.Key] = struct{}{}
+		if best < 0 || absInt(variant.Width-width) < absInt(manifest.Variants[best].Width-width) || (absInt(variant.Width-width) == absInt(manifest.Variants[best].Width-width) && variant.Width > manifest.Variants[best].Width) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return readingImageVariant{}, fmt.Errorf("%w: no image variants", catalog.ErrNotFound)
+	}
+	variant := manifest.Variants[best]
+	_, path, err := h.service.LoadReadingFile(bookID, version, "resources/variants/"+resourceID+"/"+variant.Path)
+	if err != nil {
+		return readingImageVariant{}, err
+	}
+	return readingImageVariant{Path: path, MediaType: variant.MediaType, ETag: strings.ToLower(variant.SHA256), VariantKey: variant.Key, Width: variant.Width, Height: variant.Height}, nil
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func (h *CatalogHandler) ReadingResourcesIndex(c *gin.Context) {

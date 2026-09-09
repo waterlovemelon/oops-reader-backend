@@ -3,7 +3,9 @@ package handlers
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -70,6 +72,7 @@ func newReadingTestServer(t *testing.T) (*httptest.Server, string) {
 		if err := os.WriteFile(filepath.Join(versionRoot, "resources", "cover.jpg"), []byte("image"), 0600); err != nil {
 			t.Fatal(err)
 		}
+		writeReadingImageVariants(t, versionRoot, "cover.jpg")
 	}
 	if err := os.Symlink("v1", filepath.Join(base, "current")); err != nil {
 		t.Fatal(err)
@@ -90,6 +93,44 @@ func newReadingTestServer(t *testing.T) (*httptest.Server, string) {
 	r.GET("/books/:id/reading/versions/:version/resources-index", h.ReadingResourcesIndex)
 	r.HEAD("/books/:id/reading/versions/:version/resources-index", h.ReadingResourcesIndex)
 	return httptest.NewServer(r), root
+}
+
+func writeReadingImageVariants(t *testing.T, versionRoot, resourceID string) {
+	t.Helper()
+	directory := filepath.Join(versionRoot, "resources", "variants", resourceID)
+	if err := os.MkdirAll(directory, 0750); err != nil {
+		t.Fatal(err)
+	}
+	variants := []struct {
+		Key       string `json:"key"`
+		Width     int    `json:"width"`
+		Height    int    `json:"height"`
+		Path      string `json:"path"`
+		MediaType string `json:"media_type"`
+		SHA256    string `json:"sha256"`
+	}{
+		{Key: "small", Width: 320, Height: 240, Path: "small.jpg", MediaType: "image/jpeg"},
+		{Key: "medium", Width: 640, Height: 480, Path: "medium.jpg", MediaType: "image/jpeg"},
+		{Key: "large", Width: 1280, Height: 960, Path: "large.jpg", MediaType: "image/jpeg"},
+	}
+	for i := range variants {
+		body := []byte(strings.Repeat(string(rune('a'+i)), 160+i*32))
+		digest := sha256.Sum256(body)
+		variants[i].SHA256 = fmt.Sprintf("%x", digest)
+		if err := os.WriteFile(filepath.Join(directory, variants[i].Path), body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, err := json.Marshal(struct {
+		Version  int `json:"version"`
+		Variants any `json:"variants"`
+	}{Version: 1, Variants: variants})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "variants.json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func itoa(n int) string {
@@ -201,6 +242,69 @@ func TestReadingHandlerVersionsGzipETagHEADAndResourceSafety(t *testing.T) {
 	}
 	if status, _, _ := openJSON(t, server.URL, "?version=../v1&unit=0"); status != http.StatusBadRequest {
 		t.Fatalf("path traversal status = %d", status)
+	}
+}
+
+func TestReadingResourceImageVariantsCacheAndRange(t *testing.T) {
+	server, _ := newReadingTestServer(t)
+	defer server.Close()
+	client := &http.Client{}
+	base := server.URL + "/books/book/reading/versions/v1/resources/cover.jpg"
+	for _, tc := range []struct {
+		width, actualWidth, height int
+		key                        string
+	}{
+		{320, 320, 240, "small"},
+		{640, 640, 480, "medium"},
+		{1280, 1280, 960, "large"},
+		{500, 640, 480, "medium"},
+	} {
+		resp, err := client.Get(base + "?width_px=" + itoa(tc.width))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Image-Variant") != tc.key || resp.Header.Get("X-Image-Width") != itoa(tc.actualWidth) || resp.Header.Get("X-Image-Height") != itoa(tc.height) {
+			t.Fatalf("width %d response = %d, variant=%q width=%q height=%q", tc.width, resp.StatusCode, resp.Header.Get("X-Image-Variant"), resp.Header.Get("X-Image-Width"), resp.Header.Get("X-Image-Height"))
+		}
+	}
+	resp, err := client.Get(base + "?width_px=640")
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag := resp.Header.Get("ETag")
+	resp.Body.Close()
+	req, _ := http.NewRequest(http.MethodGet, base+"?width_px=640", nil)
+	req.Header.Set("If-None-Match", etag)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("conditional image = %d", resp.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodGet, base+"?width_px=320", nil)
+	req.Header.Set("Range", "bytes=0-99")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent || len(body) != 100 {
+		t.Fatalf("image range = %d, bytes=%d", resp.StatusCode, len(body))
+	}
+	for _, query := range []string{"", "?width_px=0", "?width_px=invalid"} {
+		resp, err := client.Get(base + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid width %q = %d", query, resp.StatusCode)
+		}
 	}
 }
 
