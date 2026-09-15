@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,11 +15,13 @@ import (
 	"github.com/oops-reader/oops-reader-backend/internal/backup"
 	"github.com/oops-reader/oops-reader-backend/internal/catalog"
 	"github.com/oops-reader/oops-reader-backend/internal/community"
+	"github.com/oops-reader/oops-reader-backend/internal/device"
 	"github.com/oops-reader/oops-reader-backend/internal/entitlement"
 	"github.com/oops-reader/oops-reader-backend/internal/identity"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/config"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/db"
 	"github.com/oops-reader/oops-reader-backend/internal/platform/log"
+	"github.com/oops-reader/oops-reader-backend/internal/reading"
 	"github.com/oops-reader/oops-reader-backend/internal/transport/http/handlers"
 	"github.com/oops-reader/oops-reader-backend/internal/transport/http/middleware"
 	"github.com/oops-reader/oops-reader-backend/internal/tts"
@@ -110,13 +113,25 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	})
 	entitlementService := entitlement.NewService(nil)
 	backupService := backup.NewService(backup.NewMySQLStore(db))
+	deviceService := device.NewService(device.NewMySQLStore(db))
+	touchDevice := deviceService.TouchFunc()
+	// 进度上报只带 device_id,设备名/平台由登录注册登记。
+	readingService := reading.NewProgressService(
+		reading.NewMySQLProgressStore(db),
+		catalogBookExists(catalogService),
+		func(ctx context.Context, userID uint64, deviceID string) error {
+			return touchDevice(ctx, userID, device.Info{DeviceID: deviceID})
+		},
+	)
 
-	identityHandler := handlers.NewIdentityHandler(identityService)
+	identityHandler := handlers.NewIdentityHandler(identityService, touchDevice)
+	deviceHandler := handlers.NewDeviceHandler(deviceService)
 	catalogHandler := handlers.NewCatalogHandler(catalogService, shelfStore, commentsStore)
 	recommendationHandler := handlers.NewRecommendationHandler(recommendationService)
 	communityHandler := handlers.NewCommunityHandler(communityService, communityStorage)
 	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
 	backupHandler := handlers.NewBackupHandler(backupService)
+	readingHandler := handlers.NewReadingHandler(readingService)
 	ttsService := tts.NewService(tts.Config{
 		DefaultProvider: cfg.TTS.DefaultProvider,
 		Edge: tts.EdgeConfig{
@@ -155,6 +170,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		account.Use(authRequired)
 		{
 			account.GET("/entitlements", entitlementHandler.List)
+			account.GET("/devices", deviceHandler.List)
 		}
 
 		backupRoutes := api.Group("/backup")
@@ -178,7 +194,6 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 			catalogRoutes.HEAD("/books/:id/download", catalogHandler.Download)
 			catalogRoutes.GET("/books/:id/manifest", catalogHandler.Manifest)
 			catalogRoutes.GET("/books/:id/chapters/:chapter_id", catalogHandler.Chapter)
-<<<<<<< HEAD
 			catalogRoutes.GET("/recommendations/current", recommendationHandler.Current)
 			catalogRoutes.GET("/recommendations", recommendationHandler.History)
 			catalogRoutes.GET("/books/:id/reading/open", catalogHandler.ReadingOpen)
@@ -227,7 +242,8 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		reading := api.Group("/reading")
 		reading.Use(authRequired)
 		{
-			reading.PUT("/progress", handlers.UpdateReadingProgress)
+			reading.PUT("/progress", readingHandler.UpsertProgress)
+			reading.GET("/progress", readingHandler.ListProgress)
 			reading.POST("/sessions", handlers.CreateReadingSession)
 			reading.GET("/stats/daily", handlers.GetDailyReadingStats)
 		}
@@ -295,4 +311,19 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	}
 
 	return router
+}
+
+// catalogBookExists restricts reading progress to online catalog books. Locally
+// imported books are identified by the import timestamp, which differs per
+// device, so their progress cannot be merged across devices.
+func catalogBookExists(service *catalog.Service) reading.BookLookup {
+	return func(ctx context.Context, catalogBookKey string) (bool, error) {
+		if _, err := service.GetBook(catalogBookKey); err != nil {
+			if errors.Is(err, catalog.ErrNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	}
 }

@@ -103,12 +103,6 @@ func DeleteFromBookshelf(c *gin.Context) {
 	})
 }
 
-func UpdateReadingProgress(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "Not implemented",
-	})
-}
-
 func CreateReadingSession(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{
 		"error": "Not implemented",

@@ -25,6 +25,7 @@ Oops Reader Backend 是为 Oops Reader 提供的后端服务，主要提供以�
 - 账户注册、登录、会话刷新与密码重置
 - 账户权益查询（首版仅返回普通账户能力，保留 VIP 扩展）
 - 阅读数据云端备份与恢复
+- 账户阅读进度上报与查询
 - 社区公开浏览与账户登录后的发帖、评论、点赞
 - 健康检查
 
@@ -87,9 +88,13 @@ Oops Reader Backend 是为 Oops Reader 提供的后端服务，主要提供以�
 | 密码重置请求 | POST | `/v1/auth/password/reset-request` | 请求密码重置邮件 |
 | 当前账户 | GET | `/v1/users/me` | 获取当前账户资料 |
 | 账户权益 | GET | `/v1/account/entitlements` | 获取账户类型和权益列表 |
+| 设备清单 | GET | `/v1/account/devices` | 获取账号使用过的设备列表 |
 | 阅读备份摘要 | GET | `/v1/backup/reading-data/summary` | 获取当前账户云端备份摘要 |
 | 上传阅读备份 | POST | `/v1/backup/reading-data` | 上传本机阅读数据快照 |
 | 下载阅读备份 | GET | `/v1/backup/reading-data` | 下载当前账户最新阅读数据快照 |
+| 上报阅读进度 | PUT | `/v1/reading/progress` | 保存账户在某本书中的阅读位置 |
+| 查询阅读进度 | GET | `/v1/reading/progress?book_key=` | 查询账户在某本书中的阅读位置 |
+| 阅读进度列表 | GET | `/v1/reading/progress` | 分页列出账户全部书的阅读位置 |
 | 书籍解析 | POST | `/v1/utils/parse-book-info` | 解析书籍名称和作者并检索信息 |
 | 书籍封面 | GET | `/v1/utils/book-cover` | 获取书籍封面图片 |
 
@@ -232,13 +237,151 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 4. 社区鉴权约定
+### 3.1 设备清单
+
+登录/注册时用 `device_id` + `device_name` + `platform` 登记设备,之后每次上报阅读进度都会刷新该设备的
+`last_seen_at`(只上报进度、没登录过的设备也会被补登记)。同一账号的设备按 `(user_id, device_id)` 唯一,
+后续"限制设备数量"按这张表计数。
+
+```http
+GET /v1/account/devices
+Authorization: Bearer <access_token>
+```
+
+```json
+{
+  "data": [
+    {
+      "device_id": "flutter-1780289594444443-613242333",
+      "device_name": "MacBook Pro",
+      "platform": "linux",
+      "first_seen_at": "2026-09-14T15:00:00+08:00",
+      "last_seen_at": "2026-09-14T23:12:00+08:00"
+    }
+  ],
+  "total": 1
+}
+```
+
+按 `last_seen_at` 倒序返回;`device_name` 可能为空(设备只上报过进度)。
+
+---
+
+### 4. 阅读进度
+
+阅读进度按 `账户 + book_key` 维度落库（`reading_progress` 表，`uk_user_book_key` 唯一键），一个账户一本书一行。
+
+**`book_key` 只能是在线目录书籍**：格式为 `catalog:<catalog book_key>`（即书籍 JSON 里的 `id`）。
+本地导入书籍不上报：它们用导入时间戳做 id，每台设备都不同，跨设备合并没有意义，上报会返回 `400`。
+`catalog:` 后的 book_key 必须能在 `catalog_books` 中查到，否则返回 `404`。
+
+#### 多设备冲突规则
+
+同一本书可能被多台设备各自读到不同位置，服务端按下述规则合并，**不是**盲写覆盖：
+
+1. **进度产生时间新者胜**：比较 `recorded_at`（客户端进度产生时间），而不是服务端接收时间——离线设备迟到上传的旧位置不能盖掉更新的阅读位置。
+2. **同刻按 `device_id` 字典序取大者胜**：所有设备重放后收敛到同一行。
+3. **客户端时钟保护**：`recorded_at` 超前服务端时钟 5 分钟以上时收敛为服务端时间，并在响应里给出 `clock_skew: true`（超前的时间戳否则会永远赢下合并）。
+4. **幂等**：带上 `operation_id` 后，同一 `(device_id, operation_id)` 重复上传只在 `sync_operations` 记录一次，返回 `duplicate: true`，不会二次写入。
+5. **回写收敛（pull-on-write）**：上传落败时返回 `applied: false`，`data` 是云端获胜行，客户端应据此回写本地存储。客户端主动往回翻（位置后退但 `recorded_at` 更新）属于正常行为，仍会同步。
+6. **定位器带版本**：`content_version` 记录定位器所属的 manifest 版本；服务端重跑预处理换了版本后，客户端发现版本不一致时应只用 `progress_percent` 重新定位，不使用旧 `position_cfi`。
+
+上报成功后，若该书在账户书架中（`user_catalog_bookshelves`），服务端同时把书架 `last_read_at` 推进到不早于本次 `recorded_at`，避免"最近阅读"与进度两套真值。
+
+#### 上报进度
+```http
+PUT /v1/reading/progress
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "book_key": "catalog:remote_walden",
+  "progress_type": "location",
+  "progress_value": "7.78",
+  "progress_percent": 7.78,
+  "chapter_title": "第二章",
+  "position_cfi": "remote:unit:893:{\"blockId\":\"b7\",\"inlineOffset\":12}",
+  "content_version": "n2-s2-image-variants-v1",
+  "device_id": "flutter-1780289594444443-613242333",
+  "recorded_at": "2026-09-14T15:01:32Z",
+  "operation_id": "9f2c1d7e-4b3a-4f0e-8f2a-1c9d7e5b3a20"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| book_key | string | 是 | `catalog:<catalog book_key>`，最长 191 字符，首尾空格会被忽略 |
+| progress_type | string | 否 | `page`/`chapter`/`percent`/`location`，默认 `location` |
+| progress_value | string | 否 | 短标量进度，最长 64 字符；省略时由 `progress_percent` 生成（如 `42.50`） |
+| progress_percent | number | 否 | 百分比进度，取值 0–100，落库为 `DECIMAL(5,2)`（四舍五入） |
+| chapter_title | string | 否 | 当前章节名，最长 255 字符 |
+| position_cfi | string | 否 | 客户端定位原文（unit/CFI/自定义 locator），最长 1024 字符 |
+| content_version | string | 否 | 定位器所属内容版本（`manifest.content_version`），最长 191 字符；本次不带该字段（或定位器与版本无关）时会清空已存版本，避免客户端误用旧定位器 |
+| device_id | string | 否 | 上报设备，最长 128 字符；同刻合并的 tie-break 依据 |
+| recorded_at | string | 否 | 进度产生时间（RFC3339），默认服务端当前时间；合并的裁决依据 |
+| operation_id | string | 否 | 客户端操作唯一 ID，最长 128 字符，用于幂等重放 |
+
+`progress_value` 与 `progress_percent` 至少提供一个，否则返回 `400`。超长字段一律返回 `400`，不会静默截断。
+
+响应 `200`：
+```json
+{
+  "data": {
+    "book_key": "catalog:remote_walden",
+    "progress_type": "location",
+    "progress_value": "7.78",
+    "progress_percent": 7.78,
+    "chapter_title": "第二章",
+    "position_cfi": "remote:unit:893:{\"blockId\":\"b7\",\"inlineOffset\":12}",
+    "content_version": "n2-s2-image-variants-v1",
+    "device_id": "flutter-1780289594444443-613242333",
+    "recorded_at": "2026-09-14T23:01:32+08:00",
+    "updated_at": "2026-09-14T23:01:32+08:00"
+  },
+  "applied": true,
+  "duplicate": false,
+  "clock_skew": false
+}
+```
+
+| 响应字段 | 说明 |
+|---------|------|
+| data | 合并后的权威行；`applied` 为 `false` 时它是获胜行，客户端应回写本地 |
+| applied | 本次上报是否胜出并写入 |
+| duplicate | 该 `operation_id` 之前已应用过，本次未重复写入 |
+| clock_skew | 客户端 `recorded_at` 超前服务端时钟，已被收敛 |
+
+#### 查询单本进度
+```http
+GET /v1/reading/progress?book_key=catalog:remote_walden
+Authorization: Bearer <access_token>
+```
+
+返回 `200` 与上报接口相同的 `data` 结构；该账户没有这本书的进度时返回 `404`。
+
+#### 列出全部进度
+```http
+GET /v1/reading/progress?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+按 `updated_at` 倒序返回，`page_size` 上限 100：
+```json
+{
+  "data": [ { "book_key": "catalog:remote_walden", "progress_value": "7.78" } ],
+  "pagination": { "page": 1, "page_size": 20, "total": 1 }
+}
+```
+
+---
+
+### 5. 社区鉴权约定
 
 社区公开读接口保持匿名访问，例如帖子列表和帖子详情。发帖、评论、点赞、我的帖子等账户相关接口统一使用账户 `access_token`，不再使用独立的社区访客 token。
 
 ---
 
-### 5. 书籍解析
+### 6. 书籍解析
 
 解析输入字符串中的书籍名称和作者信息，并联网检索详细的书籍元数据。
 
@@ -391,7 +534,7 @@ curl -X POST http://localhost:8080/v1/utils/parse-book-info \
 
 ---
 
-### 3. 书籍封面
+### 7. 书籍封面
 
 根据书籍名称获取封面图片URL。
 

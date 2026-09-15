@@ -6,16 +6,19 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oops-reader/oops-reader-backend/internal/device"
 	"github.com/oops-reader/oops-reader-backend/internal/identity"
 	"github.com/oops-reader/oops-reader-backend/internal/transport/http/middleware"
 )
 
 type IdentityHandler struct {
 	service *identity.Service
+	// recordDevice 登记登录/注册用到的设备,失败则拒绝本次登录(设备数量限制将以此为准)。
+	recordDevice device.TouchFunc
 }
 
-func NewIdentityHandler(service *identity.Service) *IdentityHandler {
-	return &IdentityHandler{service: service}
+func NewIdentityHandler(service *identity.Service, recordDevice device.TouchFunc) *IdentityHandler {
+	return &IdentityHandler{service: service, recordDevice: recordDevice}
 }
 
 type registerRequest struct {
@@ -75,6 +78,10 @@ func (h *IdentityHandler) Register(c *gin.Context) {
 		writeIdentityError(c, err)
 		return
 	}
+	if err := h.registerDevice(c, result.User.ID, req.DeviceID, req.DeviceName, req.Platform); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record device"})
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{"data": authResultJSON(result)})
 }
 
@@ -95,7 +102,23 @@ func (h *IdentityHandler) Login(c *gin.Context) {
 		writeIdentityError(c, err)
 		return
 	}
+	if err := h.registerDevice(c, result.User.ID, req.DeviceID, req.DeviceName, req.Platform); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record device"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"data": authResultJSON(result)})
+}
+
+// registerDevice 在登录/注册成功后登记设备元数据。
+func (h *IdentityHandler) registerDevice(c *gin.Context, userID uint64, deviceID, deviceName, platform string) error {
+	if h.recordDevice == nil {
+		return nil
+	}
+	return h.recordDevice(c.Request.Context(), userID, device.Info{
+		DeviceID:   deviceID,
+		DeviceName: deviceName,
+		Platform:   platform,
+	})
 }
 
 func (h *IdentityHandler) Refresh(c *gin.Context) {

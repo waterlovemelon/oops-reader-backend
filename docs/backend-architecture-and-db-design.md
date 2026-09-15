@@ -467,7 +467,7 @@ oops-reader-backend/
 |---|---|---|
 | id | bigint unsigned PK | 主键 |
 | user_id | bigint unsigned not null | 用户 ID |
-| book_id | bigint unsigned not null | 书籍 ID |
+| book_key | varchar(191) not null | 客户端书籍标识（本地 id 或 catalog book_key），见迁移 012 |
 | progress_type | varchar(32) not null | page/chapter/percent/location |
 | progress_value | varchar(64) not null | 进度值 |
 | progress_percent | decimal(5,2) null | 百分比进度 |
@@ -477,6 +477,11 @@ oops-reader-backend/
 | recorded_at | datetime not null | 进度产生时间 |
 | created_at | datetime not null | 创建时间 |
 | updated_at | datetime not null | 更新时间 |
+
+> 原设计的 `book_id`（外键指向标准化 `books` 表）无法表示客户端书籍：本地导入书籍用毫秒时间戳 id，
+> 在线书籍用 `catalog_books.book_key`，且 `books` 表为空导致任何写入都被外键拒绝。
+> 迁移 `012_reading_progress_book_key.sql` 已改为 `book_key` + 唯一键 `(user_id, book_key)`，
+> 与 `user_catalog_bookshelves` 的标识列保持一致。
 
 索引建议：
 
