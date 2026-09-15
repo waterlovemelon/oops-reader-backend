@@ -95,6 +95,12 @@ Oops Reader Backend 是为 Oops Reader 提供的后端服务，主要提供以�
 | 上报阅读进度 | PUT | `/v1/reading/progress` | 保存账户在某本书中的阅读位置 |
 | 查询阅读进度 | GET | `/v1/reading/progress?book_key=` | 查询账户在某本书中的阅读位置 |
 | 阅读进度列表 | GET | `/v1/reading/progress` | 分页列出账户全部书的阅读位置 |
+| 在线阅读书架 | GET | `/v1/bookshelf` | 分页列出账号书架中的在线书籍 |
+| 加入书架 | POST | `/v1/bookshelf` | 把在线书籍加入账号书架（幂等） |
+| 修改书架条目 | PATCH | `/v1/bookshelf/:key` | 修改书架条目的阅读状态或本地书 id |
+| 移出书架 | DELETE | `/v1/bookshelf/:key` | 把在线书籍移出账号书架 |
+| 读取音色偏好 | GET | `/v1/tts/prefs` | 读取账号的听书音色偏好 |
+| 保存音色偏好 | POST | `/v1/tts/provider/select` | 保存账号的听书 provider 与音色 |
 | 书籍解析 | POST | `/v1/utils/parse-book-info` | 解析书籍名称和作者并检索信息 |
 | 书籍封面 | GET | `/v1/utils/book-cover` | 获取书籍封面图片 |
 
@@ -372,6 +378,160 @@ Authorization: Bearer <access_token>
   "pagination": { "page": 1, "page_size": 20, "total": 1 }
 }
 ```
+
+客户端"最近阅读"就是靠这个接口跨设备还原：列出的 `book_key` 与书架条目的 `catalog_book_key` 是同一个
+`catalog:<目录 id>` 标识，因此进度里的书和书架里的书不会出现两套真值。本地导入书籍没有服务端标识，
+只在各自设备上展示。
+
+---
+
+### 4.1 在线阅读书架（云同步）
+
+云端书架只保存**在线目录书籍**：`catalog_book_key` 与阅读进度的 `book_key` 是同一个
+`catalog:<目录 id>` 标识（不带 `catalog:` 前缀的目录 id 会被服务端规范化补全），所以书架与"最近阅读"
+永远指向同一行。本地导入书籍没有服务端可地址化的稳定 id，不参与云端同步。
+本地库始终是客户端书架的读写入口：云端失败或未登录时客户端照常使用本地书架，不做任何本地改动。
+
+四个接口都需要账户身份：
+
+```http
+Authorization: Bearer <access_token>
+```
+
+#### 拉取书架
+```http
+GET /v1/bookshelf?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+按 `added_at` 倒序返回（同一时间戳按入库顺序倒序），`page_size` 上限 100：
+
+```json
+{
+  "data": [
+    {
+      "catalog_book_key": "catalog:remote_walden",
+      "local_book_id": "1780289594444443",
+      "shelf_status": "want_to_read",
+      "in_library": true,
+      "added_at": "2026-09-15T18:20:00+08:00",
+      "last_read_at": "2026-09-15T20:12:00+08:00"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 20, "total": 1 }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| catalog_book_key | string | 在线书籍标识，固定为 `catalog:<catalog book_key>` |
+| local_book_id | string\|null | 加入时上报的本地书 id，供其它设备定位同一本本地书；没有则为 `null` |
+| shelf_status | string | `want_to_read` / `reading` / `finished` |
+| in_library | boolean | 是否在书架中；移出接口返回 `false` |
+| added_at | string | 加入时间（RFC3339），首次加入后不再变化 |
+| last_read_at | string\|null | 最近阅读时间（RFC3339），随阅读进度上报自动推进，从未读过为 `null` |
+
+#### 加入书架
+```http
+POST /v1/bookshelf
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "catalog_book_key": "catalog:remote_walden",
+  "local_book_id": "1780289594444443"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| catalog_book_key | string | 是 | `catalog:<目录 id>`，也接受裸目录 id，服务端统一规范化 |
+| local_book_id | string | 否 | 本地书 id；省略则不记录 |
+
+幂等：重复加入不会产生第二行；先前移出的书会恢复为 `want_to_read`，`added_at` 仍是首次加入时间。
+书籍不在目录中（或已下线）返回 `404 catalog book not found`。
+响应 `200`：`{"data": <shelfEntry>}`，结构与拉取列表中的元素一致。
+
+#### 修改书架条目
+```http
+PATCH /v1/bookshelf/catalog:remote_walden
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "shelf_status": "reading"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| shelf_status | string | 否 | `want_to_read` / `reading` / `finished`，其它值返回 `400` |
+| local_book_id | string | 否 | 本地书 id；只会用传入的非空值覆盖 |
+
+两个字段至少传一个，都为空返回 `400`；书籍不在书架中返回 `404`。
+响应 `200`：`{"data": <shelfEntry>}`。
+
+#### 移出书架
+```http
+DELETE /v1/bookshelf/catalog:remote_walden
+Authorization: Bearer <access_token>
+```
+
+软删除（行保留，可在其它设备重新加入）。书籍不在书架中返回 `404`，成功返回：
+
+```json
+{ "data": { "catalog_book_key": "catalog:remote_walden", "in_library": false } }
+```
+
+服务端数据库未就绪时，四个接口都返回 `503 shelf service unavailable`。
+
+---
+
+### 4.2 听书音色偏好（云同步）
+
+音色偏好按账户保存，换设备后可读回同一套选择。客户端在未登录或请求失败时继续使用本地偏好，
+播放不受影响。
+
+#### 读取音色偏好
+```http
+GET /v1/tts/prefs
+Authorization: Bearer <access_token>
+```
+
+```json
+{
+  "data": {
+    "provider": "edge",
+    "voice": "Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)",
+    "configured": false
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| provider | string | 已选 TTS provider；`configured` 为 `false` 时是服务端默认值 |
+| voice | string | 已选音色标识；从未设置过为空字符串 |
+| configured | boolean | 账户是否设置过音色偏好 |
+
+#### 保存音色偏好
+```http
+POST /v1/tts/provider/select
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "provider": "",
+  "voice": "Microsoft Server Speech Text to Speech Voice (zh-CN, YunxiNeural)"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| provider | string | 否 | 传空或缺省时保留服务端已选的 provider（账户从未设置过则用服务端默认值）；传了但未注册返回 `400` |
+| voice | string | 否 | 音色标识，可为空 |
+
+成功返回 `200 {"status":"ok"}`。
 
 ---
 

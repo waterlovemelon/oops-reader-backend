@@ -132,6 +132,31 @@ mariadb -u root -p oops_reader < migrations/001_init_user_auth.sql
 
 Migrations are numbered sequentially. There is no migration 006 (skips from 005 to 007).
 
+`catalog_books` is created here (`005_init_catalog_books.sql`) but **extended by the manager repo**:
+`oops-reader-manager/service/migrations/002_extend_catalog_books_for_manager.sql` adds
+`description`, `format`, `cover_storage_path`, `source`, `uploaded_at`, `published_at`, `deleted_at`,
+`updated_by` and turns `status` into `VARCHAR`; `005_catalog_book_detail_fields.sql` adds `word_count`.
+The catalog store selects those columns, so a database built from this repo's migrations alone fails
+every catalog read with `Unknown column 'description'`. Apply both repos' migrations.
+
+## Online Sync
+
+Only online catalog books sync; they are addressed as `catalog:<catalog book_key>`. The same
+identifier is used for `reading_progress.book_key` and `user_catalog_bookshelves.catalog_book_key`
+(normalized by `reading.CatalogShelfBookKey`), so "on my shelf" and "recently read" can never drift
+apart. Locally imported books have per-device millisecond ids and are rejected by the progress API
+(`ErrUnsupportedBookKey`).
+
+- `PUT /v1/reading/progress` merges one position (later `recorded_at` wins, ties broken by
+  `device_id`, client clocks clamped to 5 minutes of skew, `(device_id, operation_id)` idempotency);
+  `GET /v1/reading/progress` lists a page ordered by most recent update — this is what clients use to
+  rebuild a cross-device "recently read" row.
+- `GET|POST /v1/bookshelf`, `PATCH|DELETE /v1/bookshelf/:key` manage the account's shelf through
+  `catalog.ShelfStore` (soft delete; `last_read_at` is projected from progress uploads).
+- `GET /v1/tts/prefs` reads back the account's TTS provider/voice; `POST /v1/tts/provider/select`
+  writes it (empty `provider` keeps the stored one). Synthesis falls back to the stored voice only
+  when the client sends no `voice`.
+
 ## Key Conventions
 
 - **Context propagation**: All service and store methods accept `context.Context` as first parameter
