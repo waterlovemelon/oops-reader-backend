@@ -127,6 +127,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	identityHandler := handlers.NewIdentityHandler(identityService, touchDevice)
 	deviceHandler := handlers.NewDeviceHandler(deviceService)
 	catalogHandler := handlers.NewCatalogHandler(catalogService, shelfStore, commentsStore)
+	bookshelfHandler := handlers.NewBookshelfHandler(shelfStore, catalogService)
 	recommendationHandler := handlers.NewRecommendationHandler(recommendationService)
 	communityHandler := handlers.NewCommunityHandler(communityService, communityStorage)
 	entitlementHandler := handlers.NewEntitlementHandler(identityService, entitlementService)
@@ -233,10 +234,10 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		bookshelf := api.Group("/bookshelf")
 		bookshelf.Use(authRequired)
 		{
-			bookshelf.GET("", handlers.ListBookshelf)
-			bookshelf.POST("", handlers.AddToBookshelf)
-			bookshelf.PATCH("/:id", handlers.UpdateBookshelf)
-			bookshelf.DELETE("/:id", handlers.DeleteFromBookshelf)
+			bookshelf.GET("", bookshelfHandler.List)
+			bookshelf.POST("", bookshelfHandler.Add)
+			bookshelf.PATCH("/:key", bookshelfHandler.Update)
+			bookshelf.DELETE("/:key", bookshelfHandler.Delete)
 		}
 
 		reading := api.Group("/reading")

@@ -79,30 +79,6 @@ func GetBookByID(c *gin.Context) {
 	})
 }
 
-func ListBookshelf(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "Not implemented",
-	})
-}
-
-func AddToBookshelf(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "Not implemented",
-	})
-}
-
-func UpdateBookshelf(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "Not implemented",
-	})
-}
-
-func DeleteFromBookshelf(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "Not implemented",
-	})
-}
-
 func CreateReadingSession(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{
 		"error": "Not implemented",
