@@ -271,6 +271,7 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 		ttsRoutes := api.Group("/tts")
 		{
 			ttsRoutes.GET("/providers", ttsHandler.ListProviders)
+			ttsRoutes.GET("/prefs", authRequired, ttsHandler.GetPrefs)
 			ttsRoutes.GET("/voices", authRequired, ttsHandler.ListVoices)
 			ttsRoutes.GET("/voices/:provider", authRequired, ttsHandler.ListVoices)
 			ttsRoutes.POST("/provider/select", authRequired, ttsHandler.SelectProvider)

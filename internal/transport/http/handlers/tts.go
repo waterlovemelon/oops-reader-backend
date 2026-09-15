@@ -202,7 +202,32 @@ func (h *TTSHandler) ListProviders(c *gin.Context) {
 	c.JSON(http.StatusOK, providers)
 }
 
-// SelectProvider saves a user's TTS provider and voice preference.
+// GetPrefs returns the account's stored provider and voice preference, so a
+// new device restores the selection made elsewhere. configured=false means the
+// account never chose one and provider is the service default.
+//
+//	GET /v1/tts/prefs
+func (h *TTSHandler) GetPrefs(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization required"})
+		return
+	}
+
+	preference, err := h.service.UserPreference(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"provider":   preference.Provider,
+		"voice":      preference.Voice,
+		"configured": preference.Configured,
+	}})
+}
+
+// SelectProvider saves a user's TTS provider and voice preference. An empty
+// provider keeps the one already stored on the account.
 //
 //	POST /v1/tts/provider/select
 //	Body: { "provider": "edge", "voice": "..." }
@@ -214,7 +239,7 @@ func (h *TTSHandler) SelectProvider(c *gin.Context) {
 	}
 
 	var req struct {
-		Provider string `json:"provider" binding:"required"`
+		Provider string `json:"provider"`
 		Voice    string `json:"voice"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -222,9 +247,11 @@ func (h *TTSHandler) SelectProvider(c *gin.Context) {
 		return
 	}
 
-	if _, err := h.service.Provider(req.Provider); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	if req.Provider != "" {
+		if _, err := h.service.Provider(req.Provider); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	if err := h.service.SaveUserPref(c.Request.Context(), userID, req.Provider, req.Voice); err != nil {
