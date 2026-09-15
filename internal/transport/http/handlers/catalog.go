@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oops-reader/oops-reader-backend/internal/catalog"
+	"github.com/oops-reader/oops-reader-backend/internal/reading"
 	"github.com/oops-reader/oops-reader-backend/internal/transport/http/middleware"
 )
 
@@ -193,7 +194,7 @@ func (h *CatalogHandler) GetBook(c *gin.Context) {
 	}
 	data := h.bookJSON(c, *book)
 	if userID, ok := middleware.CurrentUserID(c); ok && h.shelfStore != nil {
-		shelf, err := h.shelfStore.GetShelf(c.Request.Context(), userID, book.ID)
+		shelf, err := h.shelfStore.GetShelf(c.Request.Context(), userID, reading.CatalogShelfBookKey(book.ID))
 		if err == nil {
 			data["shelf"] = shelfJSON(shelf)
 		} else {
@@ -245,7 +246,8 @@ func (h *CatalogHandler) AddToShelf(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	state, err := h.shelfStore.UpsertShelf(c.Request.Context(), userID, bookID, req.LocalBookID)
+	// The shelf stores the same catalog:<id> key as reading progress.
+	state, err := h.shelfStore.UpsertShelf(c.Request.Context(), userID, reading.CatalogShelfBookKey(bookID), req.LocalBookID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

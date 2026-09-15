@@ -131,6 +131,20 @@ func CatalogBookKey(bookKey string) string {
 	return strings.TrimPrefix(bookKey, BookKeyPrefixCatalog)
 }
 
+// CatalogShelfBookKey returns the user_catalog_bookshelves.catalog_book_key of
+// an online book in the same catalog:<id> form as reading_progress.book_key, so
+// the shelf and the progress projection of "recently read" never disagree. The
+// value is accepted with or without the catalog: prefix; "" when it addresses
+// nothing.
+func CatalogShelfBookKey(bookKey string) string {
+	id := strings.TrimSpace(bookKey)
+	id = strings.TrimPrefix(id, BookKeyPrefixCatalog)
+	if id == "" {
+		return ""
+	}
+	return BookKeyPrefixCatalog + id
+}
+
 // Preferred reports whether incoming must replace current. The later progress
 // generation time wins; equal timestamps are broken by the lexicographically
 // larger device_id so every device converges on the same row.

@@ -245,8 +245,10 @@ WHERE user_id = ? AND book_key = ?`,
 // with progress. It never inserts: adding a book to the shelf stays an explicit
 // user action.
 func touchShelfLastRead(ctx context.Context, tx *sql.Tx, userID uint64, progress Progress) error {
-	catalogBookKey := CatalogBookKey(progress.BookKey)
-	if catalogBookKey == "" {
+	// The shelf keys its rows with the same catalog:<id> form as progress, so
+	// the projection cannot drift from the progress row it mirrors.
+	shelfKey := CatalogShelfBookKey(progress.BookKey)
+	if shelfKey == "" {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -254,7 +256,7 @@ UPDATE user_catalog_bookshelves
 SET last_read_at = ?
 WHERE user_id = ? AND catalog_book_key = ?
   AND (last_read_at IS NULL OR last_read_at < ?)`,
-		progress.RecordedAt, userID, catalogBookKey, progress.RecordedAt,
+		progress.RecordedAt, userID, shelfKey, progress.RecordedAt,
 	); err != nil {
 		return fmt.Errorf("touch shelf last read: %w", err)
 	}
