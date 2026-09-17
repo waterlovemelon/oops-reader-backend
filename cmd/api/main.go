@@ -113,7 +113,13 @@ func setupRouter(cfg *config.Config, logger *zap.Logger, db *sql.DB) *gin.Engine
 	})
 	entitlementService := entitlement.NewService(nil)
 	backupService := backup.NewService(backup.NewMySQLStore(db))
-	deviceService := device.NewService(device.NewMySQLStore(db))
+	var deviceStore device.Store
+	if db == nil {
+		deviceStore = device.NewNoopStore()
+	} else {
+		deviceStore = device.NewMySQLStore(db)
+	}
+	deviceService := device.NewService(deviceStore)
 	touchDevice := deviceService.TouchFunc()
 	// 进度上报只带 device_id,设备名/平台由登录注册登记。
 	readingService := reading.NewProgressService(
