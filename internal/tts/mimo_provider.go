@@ -160,14 +160,28 @@ func (p *MiMoProvider) StreamSynthesize(ctx context.Context, req SynthesizeReque
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
+	// A stream that carries no audio must not be reported as a successful
+	// synthesis: the handler has not written a byte yet, so it can still answer
+	// 502 instead of the empty 200 body that makes a failed chunk look like a
+	// silent one to clients.
+	audioBytes := 0
+	events := 0
+	// Bounded copy of what the upstream sent, so the zero-audio case reports
+	// what happened instead of only that nothing did.
+	var preview strings.Builder
+	const previewLimit = 200
 	for scanner.Scan() {
+		if preview.Len() < previewLimit {
+			preview.WriteString(scanner.Text())
+			preview.WriteByte('\n')
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
-			return StreamMetadata{Format: "pcm16", SampleRate: 24000, Channels: 1}, nil
+			break
 		}
 
 		var chunk mimoStreamResponse
@@ -177,6 +191,7 @@ func (p *MiMoProvider) StreamSynthesize(ctx context.Context, req SynthesizeReque
 		if chunk.Error != nil {
 			return StreamMetadata{}, fmt.Errorf("mimo tts: stream api error: %s", chunk.Error.Message)
 		}
+		events++
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Audio.Data == "" {
 			continue
 		}
@@ -188,10 +203,17 @@ func (p *MiMoProvider) StreamSynthesize(ctx context.Context, req SynthesizeReque
 			if err := write(pcm); err != nil {
 				return StreamMetadata{}, fmt.Errorf("mimo tts: write stream audio: %w", err)
 			}
+			audioBytes += len(pcm)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return StreamMetadata{}, fmt.Errorf("mimo tts: read stream: %w", err)
+	}
+	if audioBytes == 0 {
+		return StreamMetadata{}, fmt.Errorf(
+			"mimo tts: stream produced no audio (events=%d, upstream=%q)",
+			events, preview.String(),
+		)
 	}
 	return StreamMetadata{Format: "pcm16", SampleRate: 24000, Channels: 1}, nil
 }

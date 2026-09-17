@@ -95,3 +95,45 @@ func TestMiMoProviderStreamSynthesizeForwardsAudioBeforeUpstreamCompletes(t *tes
 		t.Fatalf("received PCM = %v, want %v", received, append(firstPCM, secondPCM...))
 	}
 }
+
+// The live upstream occasionally closes a stream that never carried audio. That
+// used to be reported as a successful synthesis, which the HTTP handler turned
+// into `200 OK` with an empty body — indistinguishable from a silent chunk for
+// the client, and the reason a mid-chapter chunk failure killed playback.
+func TestMiMoProviderStreamSynthesizeFailsWhenUpstreamSendsNoAudio(t *testing.T) {
+	cases := map[string]string{
+		"stream ends immediately": "data: [DONE]\n\n",
+		"text-only deltas": "data: {\"choices\":[{\"delta\":{\"content\":\"抱歉，我无法朗读这段文本。\"}}]}\n\n" +
+			"data: [DONE]\n\n",
+	}
+
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			provider := NewMiMoProvider(MiMoConfig{
+				APIKey:  "test-key",
+				BaseURL: server.URL,
+				Model:   "mimo-v2.5-tts",
+			})
+
+			var received []byte
+			_, err := provider.StreamSynthesize(context.Background(), SynthesizeRequest{
+				Text: "测试空流",
+			}, func(chunk []byte) error {
+				received = append(received, chunk...)
+				return nil
+			})
+			if err == nil {
+				t.Fatalf("StreamSynthesize() error = nil, want a failure for a stream without audio")
+			}
+			if len(received) != 0 {
+				t.Fatalf("received PCM = %v, want none", received)
+			}
+		})
+	}
+}
